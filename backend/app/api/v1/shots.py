@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.scenes import flush_sequence
 from app.core.config import settings
 from app.core.db import get_db
-from app.core.errors import AppError, ConflictError, NotFoundError
+from app.core.errors import AppError, ConflictError, GatePendingError, NotFoundError
 from app.core.response import ok
-from app.models.domain import Character, Scene, Shot
-from app.models.tracking import RenderAttempt
+from app.models.domain import Character, PipelineRun, ReviewGate, Scene, Shot
+from app.models.tracking import Export, QCReport, RenderAttempt
 from app.schemas import AttemptOut, GateDecision, RenderRequest, ShotCreate, ShotOut, ShotUpdate
 from app.services.catalog import project_or_404
 from app.services.preparation import ensure_editable, invalidate_board
@@ -133,7 +135,30 @@ async def render_shot(
     ⚠️ 不要在此同步调用 Provider。图像生成秒级、视频分钟级，
        同步等待会占满 worker 并触发 HTTP 超时。必须走队列。
     """
-    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
+    if body.stage != "image":
+        raise AppError("首个 Demo 只支持图像关键帧生成")
+    project_id = await db.scalar(select(Scene.project_id).join(Shot).where(Shot.id == shot_id))
+    if not project_id:
+        raise NotFoundError("镜头不存在")
+    shot = await db.scalar(select(Shot).where(Shot.id == shot_id).with_for_update())
+    if shot is None:
+        raise NotFoundError("镜头不存在")
+    project = await project_or_404(db, project_id, lock=True)
+    run = await db.scalar(
+        select(PipelineRun)
+        .where(PipelineRun.project_id == project.id)
+        .order_by(PipelineRun.created_at.desc())
+        .limit(1)
+    )
+    if (
+        run is None
+        or run.status != "waiting_model"
+        or run.graph_state.get("storyboard_version") != project.storyboard_version
+    ):
+        raise GatePendingError("请先通过当前版本的 B 分镜审核")
+    from app.core.queue import enqueue_render_job
+    job_id = await enqueue_render_job(shot_id, body.n)
+    return ok({"shot_id": shot_id, "queued": body.n, "job_id": job_id})
 
 
 @router.get("/{shot_id}/attempts", summary="抽卡历史")
@@ -160,7 +185,58 @@ async def compliance_gate(
       4. 被 QC 判 blocked（合规拦截）的镜头禁止在此放行，必须重新生成
          —— 对应 2025.9《管理提示（动画微短剧管理）》的"先审后播"要求
     """
-    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
+    project_id = await db.scalar(select(Scene.project_id).join(Shot).where(Shot.id == shot_id))
+    if not project_id:
+        raise NotFoundError("镜头不存在")
+    project = await project_or_404(db, project_id, lock=True)
+    shot = await db.scalar(select(Shot).join(Scene).where(Shot.id == shot_id).with_for_update())
+    if shot is None:
+        raise NotFoundError("镜头不存在")
+    report = await db.scalar(
+        select(QCReport)
+        .join(RenderAttempt)
+        .where(RenderAttempt.shot_id == shot.id)
+        .order_by(QCReport.created_at.desc(), QCReport.id.desc())
+        .with_for_update()
+        .limit(1)
+    )
+    if report is None or report.verdict != "pass":
+        raise GatePendingError("只有视觉质检通过的关键帧才能进入 C 审核")
+    attempt = await db.get(RenderAttempt, report.attempt_id, with_for_update=True)
+    if attempt is None or not attempt.asset_path:
+        raise AppError("质检通过记录缺少关键帧产物")
+    if body.status == "approved":
+        shot.locked_attempt_id = attempt.id
+        shot.status = "video"
+    else:
+        shot.status = "suspended"
+    shot.version += 1
+    run_id = await db.scalar(
+        select(PipelineRun.id)
+        .where(PipelineRun.project_id == project.id)
+        .order_by(PipelineRun.created_at.desc())
+        .limit(1)
+    )
+    if run_id is None:
+        raise AppError("项目没有可用运行记录")
+    gate = ReviewGate(
+        run_id=run_id,
+        gate_type="compliance",
+        status=body.status,
+        reviewer=body.reviewer or "manual",
+        note=body.note or "",
+        snapshot={
+            "shot_id": shot.id,
+            "attempt_id": attempt.id,
+            "asset_path": attempt.asset_path,
+            "qc_report_id": report.id,
+            "verdict": report.verdict,
+        },
+        decided_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    db.add(gate)
+    await db.flush()
+    return ok({"shot_id": shot.id, "status": shot.status, "attempt_id": attempt.id, "gate_id": gate.id})
 
 
 @router.post("/{shot_id}/video", summary="触发视频生成")
@@ -187,4 +263,18 @@ async def synthesize(
     注意：FFmpeg 是子进程调用，必须用 asyncio.create_subprocess_exec，
     不能用 subprocess.run（会阻塞事件循环）。设置超时与取消令牌。
     """
-    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
+    from app.services.synthesis import synthesize_storyboard
+
+    return ok(await synthesize_storyboard(db, project_id=project_id, run_id=run_id))
+
+
+@router.get("/exports/{export_id}/file", summary="下载分镜预演")
+async def download_export(export_id: str, db: AsyncSession = Depends(get_db)) -> FileResponse:
+    export = await db.get(Export, export_id)
+    if export is None or export.status != "succeeded" or not export.output_path:
+        raise NotFoundError("导出文件不存在")
+    root = settings.storage_path.resolve()
+    target = (root / export.output_path).resolve()
+    if not target.is_relative_to(root / "exports") or not target.is_file():
+        raise NotFoundError("导出文件不存在")
+    return FileResponse(target, media_type="video/mp4", filename=f"storyboard-{export_id}.mp4")

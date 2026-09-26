@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './api'
-import type { Board, Gate, Project, Run, Scene, Shot } from './api'
+import type { Board, ExportResult, Gate, Project, Run, Scene, Shot } from './api'
 import { Dialog, Empty, useApi } from './ui'
 
 type Editor = { type: 'scene'; scene?: Scene } | { type: 'shot'; scene: Scene; shot?: Shot } | { type: 'review' } | { type: 'delete'; scene: Scene; shot?: Shot } | null
@@ -90,6 +90,11 @@ export default function Storyboard({ project, run, version, refresh }: {
           const link = document.createElement('a'); link.href = url; link.download = `storyboard-v${data.storyboard_version}.json`; link.click()
           setTimeout(() => URL.revokeObjectURL(url), 1000)
         })}>导出审核快照</button>}
+        {data?.gate?.status === 'approved' && <button className="button" disabled={busy || data.shots.some(shot => !shot.locked_attempt_id)} onClick={() => void perform(async () => {
+          const result = await api<ExportResult>('/shots/synthesize?project_id=' + project.id + '&run_id=' + run.id, { method: 'POST' })
+          const link = document.createElement('a'); link.href = '/api/v1/shots/exports/' + result.id + '/file'; link.download = 'storyboard-' + project.id + '.mp4'; link.click()
+          setNotice('分镜预演已生成（' + (result.duration_ms / 1000).toFixed(1) + ' 秒）。')
+        })}>生成分镜预演 MP4</button>}
         <button className="text-button" onClick={refresh}>刷新</button>
       </div>
     </section>
@@ -105,7 +110,7 @@ export default function Storyboard({ project, run, version, refresh }: {
         <div className="shot-card-heading"><strong>{scene.seq}-{String(shot.seq).padStart(2, '0')}</strong><span className="pill">{shot.shot_size}</span><span>{shot.duration_ms / 1000}s</span></div>
         <div className="shot-placeholder"><span>{shot.shot_size}</span><small>待生成关键帧</small></div>
         <div className="shot-card-body"><h3>{shot.action_text}</h3><p>{shot.composition}</p><p className="muted">{shot.camera_move || '固定镜头'} · {shot.character_ids.map(id => data.characters.find(c => c.id === id)?.name).join('、') || '纯场景'}</p>{shot.dialogue && <blockquote>{shot.dialogue}</blockquote>}
-          <div className="card-footer"><span>镜头 v{shot.version}</span><button className="text-button" onClick={() => open({ type: 'shot', scene, shot })}>编辑镜头</button><button className="text-button" onClick={() => open({ type: 'delete', scene, shot })}>删除</button></div>
+          <div className="card-footer"><span>镜头 v{shot.version} · {shot.status}</span><button className="text-button" disabled={busy || data.gate?.status !== 'approved'} onClick={() => void perform(async () => { await api(`/shots/${shot.id}/render`, { method: 'POST', body: JSON.stringify({ n: 1, stage: 'image' }) }); setNotice('关键帧任务已进入队列，稍后刷新查看结果。') })}>生成关键帧</button><button className="text-button" onClick={() => open({ type: 'shot', scene, shot })}>编辑镜头</button><button className="text-button" onClick={() => open({ type: 'delete', scene, shot })}>删除</button></div>
         </div>
       </article>)}</div>
       {!data.shots.some(s => s.scene_id === scene.id) && <p className="reference-empty">本场景还没有镜头。添加第一个镜头后即可继续编排。</p>}

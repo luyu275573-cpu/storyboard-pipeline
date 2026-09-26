@@ -60,8 +60,9 @@ export type Scene = {
 export type Shot = {
   id: string; scene_id: string; seq: number; shot_size: string; camera_move: string | null;
   composition: string; character_ids: string[]; action_text: string; dialogue: string | null;
-  duration_ms: number; negative_prompt: string | null; version: number; status: string
+  duration_ms: number; negative_prompt: string | null; version: number; status: string; locked_attempt_id?: string | null
 }
+export type ExportResult = { id: string; status: string; output_path: string; duration_ms: number; shots: number }
 export type Board = {
   project_id: string; run_id: string; storyboard_version: number; characters: Character[];
   references: Reference[]; scenes: Scene[]; shots: Shot[]; blockers: string[]; characters_ready: boolean;

@@ -15,11 +15,28 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from arq.connections import RedisSettings
+from sqlalchemy import func, select
 
+from app.agents.qc_agent import QCAgent
 from app.core.config import settings
+from app.core.errors import AppError, BudgetExceededError, ProviderUncertainError
+from app.models.domain import Character, CharacterRef, PipelineRun, Project, Scene, Shot
+from app.models.enums import AttemptStatus, ProviderKind
+from app.models.tracking import QCReport, RenderAttempt
+from app.providers import build_router
+from app.services.cost_service import CostService
+from app.services.rendering import (
+    RenderSpec,
+    apply_provider_result,
+    build_image_payload,
+    prepare_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +94,203 @@ async def enqueue_render(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         （与农牧项目"中断后的部分结果保留"、YumeShelf"执行预算"同一思路）
       - 预算耗尽不是错误：应 status=suspended 并保留成果，不是抛异常让任务失败重试
     """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    shot_id = str(kwargs.get("shot_id") or "")
+    if not shot_id:
+        raise AppError("缺少 shot_id")
+    stage = str(kwargs.get("stage") or "image")
+    if stage != "image":
+        raise AppError("首个 Demo 只支持 image 阶段")
+    count = int(kwargs.get("n", 1))
+    if not 1 <= count <= 6:
+        raise AppError("抽卡数量必须为 1 到 6")
+    sessions = ctx.get("session_factory")
+    if sessions is None:
+        raise AppError("Worker 数据库会话未初始化")
+    cost = CostService(sessions)
+    router = build_router(cost)
+    anchor_level = str(kwargs.get("anchor_level") or "normal")
+    strengthen_fields = [str(item) for item in (kwargs.get("strengthen_fields") or [])]
+    results: list[dict[str, Any]] = []
+    for _offset in range(count):
+        async with sessions.begin() as db:
+            shot = await db.scalar(
+                select(Shot).where(Shot.id == shot_id).with_for_update()
+            )
+            if shot is None:
+                raise AppError("镜头不存在")
+            scene = await db.get(Scene, shot.scene_id)
+            if scene is None:
+                raise AppError("镜头场景不存在")
+            project = await db.get(Project, scene.project_id)
+            if project is None:
+                raise AppError("镜头项目不存在")
+            run = await db.scalar(
+                select(PipelineRun)
+                .where(PipelineRun.project_id == project.id)
+                .where(PipelineRun.status.in_(["waiting_model", "running"]))
+                .order_by(PipelineRun.created_at.desc())
+                .with_for_update()
+                .limit(1)
+            )
+            if run is None or run.graph_state.get("storyboard_version") != project.storyboard_version:
+                raise AppError("当前项目尚未通过有效的 B 分镜审核")
+            characters = list(
+                await db.scalars(
+                    select(Character)
+                    .where(Character.project_id == project.id)
+                    .where(Character.id.in_(shot.character_ids))
+                )
+            )
+            refs = list(
+                await db.scalars(
+                    select(CharacterRef)
+                    .where(CharacterRef.character_id.in_(shot.character_ids))
+                    .where(CharacterRef.qc_passed.is_(True), CharacterRef.is_primary.is_(True))
+                )
+            )
+            last_no = await db.scalar(
+                select(func.max(RenderAttempt.attempt_no)).where(RenderAttempt.shot_id == shot.id)
+            )
+            attempt_no = (last_no or 0) + 1
+            anchor_version = max([getattr(c, "anchor_version", 1) for c in characters] or [1])
+            seed = str(kwargs.get("seed") or f"{shot.id}:{attempt_no}")
+            spec = RenderSpec(
+                project.id,
+                run.id,
+                shot.id,
+                attempt_no,
+                anchor_version,
+                seed=seed,
+                attempt_id=str(uuid.uuid4()),
+            )
+            references = [str(settings.storage_path / ref.asset_path) for ref in refs]
+            payload = build_image_payload(
+                project=project,
+                scene=scene,
+                shot=shot,
+                characters=characters,
+                reference_paths=references,
+                anchor_level=anchor_level,
+                strengthen_fields=strengthen_fields,
+                seed=spec.seed,
+                model=settings.siliconflow_image_model,
+            )
+            attempt, call_context = prepare_attempt(spec=spec, payload=payload)
+            db.add(attempt)
+            await db.flush()
+            attempt.started_at = datetime.now(UTC).replace(tzinfo=None)
+        try:
+            result = await router.generate(ProviderKind.IMAGE, payload, call_context)
+        except (BudgetExceededError, ProviderUncertainError):
+            raise
+        except Exception as exc:
+            logger.exception("镜头生成失败 shot_id=%s", shot_id)
+            async with sessions.begin() as db:
+                row = await db.get(RenderAttempt, attempt.id, with_for_update=True)
+                if row is not None and row.status == AttemptStatus.PENDING.value:
+                    row.status = AttemptStatus.FAILED.value
+                    row.error_code = type(exc).__name__[:60]
+                    row.finished_at = datetime.now(UTC).replace(tzinfo=None)
+            results.append({"attempt_id": attempt.id, "status": AttemptStatus.FAILED.value})
+            continue
+        async with sessions.begin() as db:
+            row = await db.get(RenderAttempt, attempt.id, with_for_update=True)
+            if row is None:
+                raise AppError("抽卡记录在调用后丢失")
+            apply_provider_result(row, result)
+            if result.success:
+                row.status = AttemptStatus.SUCCEEDED.value
+                current_shot = await db.get(Shot, shot_id, with_for_update=True)
+                current_scene = (
+                    await db.get(Scene, current_shot.scene_id, with_for_update=True)
+                    if current_shot
+                    else None
+                )
+                if current_shot is not None:
+                    current_shot.status = "review"
+                if current_scene is not None and current_scene.baseline_attempt_id is None:
+                    current_scene.baseline_attempt_id = row.id
+            else:
+                current_shot = await db.get(Shot, shot_id, with_for_update=True)
+                if current_shot is not None:
+                    current_shot.status = "suspended"
+        if result.success:
+            async with sessions.begin() as db:
+                qc_shot = await db.get(Shot, shot_id, with_for_update=True)
+                qc_scene = await db.get(Scene, qc_shot.scene_id, with_for_update=True) if qc_shot else None
+                if qc_shot is None or qc_scene is None:
+                    raise AppError("质检前镜头快照不存在")
+                qc_characters = list(
+                    await db.scalars(
+                        select(Character)
+                        .where(Character.project_id == project.id)
+                        .where(Character.id.in_(qc_shot.character_ids))
+                    )
+                )
+                qc_attempt = await db.get(RenderAttempt, attempt.id, with_for_update=True)
+                if qc_attempt is None or not qc_attempt.asset_path:
+                    raise AppError("质检前缺少关键帧产物")
+                baseline_path = None
+                if qc_scene.baseline_attempt_id and qc_scene.baseline_attempt_id != qc_attempt.id:
+                    baseline = await db.get(RenderAttempt, qc_scene.baseline_attempt_id)
+                    baseline_path = (
+                        str(settings.storage_path / baseline.asset_path)
+                        if baseline and baseline.asset_path
+                        else None
+                    )
+                image_paths = [
+                    path
+                    for path in [baseline_path, str(settings.storage_path / qc_attempt.asset_path)]
+                    if path
+                ]
+                anchor_prompt = str(getattr(qc_characters[0], "anchor_prompt", "") if qc_characters else "")
+                anchor_version = max([getattr(c, "anchor_version", 1) for c in qc_characters] or [1])
+                qc_context = replace(
+                    call_context,
+                    kind=ProviderKind.VISION,
+                    operation_key=f"qc:{shot_id}:{attempt.id}"[:120],
+                )
+                qc_result = await QCAgent(provider_router=router).inspect(
+                    image_paths=image_paths,
+                    anchor_prompt=anchor_prompt,
+                    anchor_version=anchor_version,
+                    shot_size=qc_shot.shot_size,
+                    composition=qc_shot.composition,
+                    action_text=qc_shot.action_text,
+                    dialogue=qc_shot.dialogue,
+                    has_baseline_frame=baseline_path is not None,
+                    call_context=qc_context,
+                )
+                db.add(
+                    QCReport(
+                        attempt_id=qc_attempt.id,
+                        model=settings.siliconflow_vision_model,
+                        verdict=qc_result.verdict.value,
+                        dimensions=qc_result.dimensions,
+                        severity=qc_result.severity.value if qc_result.severity else None,
+                        suggestion=qc_result.suggestion.value if qc_result.suggestion else None,
+                        confidence=qc_result.confidence,
+                        reasoning=qc_result.reasoning,
+                        raw_response=qc_result.raw,
+                    )
+                )
+                if qc_result.is_pass:
+                    qc_shot.status = "review"
+                    if qc_scene.baseline_attempt_id is None:
+                        qc_scene.baseline_attempt_id = qc_attempt.id
+                else:
+                    qc_shot.status = "suspended"
+                results.append(
+                    {
+                        "attempt_id": attempt.id,
+                        "status": qc_shot.status,
+                        "asset_path": qc_attempt.asset_path,
+                        "qc_verdict": qc_result.verdict.value,
+                    }
+                )
+        else:
+            results.append({"attempt_id": attempt.id, "status": row.status, "asset_path": row.asset_path})
+    return {"shot_id": shot_id, "stage": stage, "attempts": results}
 
 
 async def enqueue_pipeline_run(ctx: dict[str, Any], run_id: str) -> dict[str, Any]:

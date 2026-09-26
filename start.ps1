@@ -7,6 +7,7 @@ $LogDir = Join-Path $ProjectRoot 'logs'
 $RecordFile = Join-Path $LogDir 'dev-processes.json'
 $PythonExe = Join-Path $BackendDir '.venv\Scripts\python.exe'
 $ViteScript = Join-Path $FrontendDir 'node_modules\vite\bin\vite.js'
+$WorkerModule = 'app.workers.arq_settings.WorkerSettings'
 $NodeExe = (Get-Command node -ErrorAction Stop).Source
 if (-not (Test-Path -LiteralPath $PythonExe)) { throw 'Install backend requirements in backend/.venv first.' }
 if (-not (Test-Path -LiteralPath $ViteScript)) { throw 'Run npm ci in frontend first.' }
@@ -40,6 +41,9 @@ function Save-StartedProcesses {
 try {
     $ApiProcess = Start-Process -FilePath $PythonExe -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8100' -WorkingDirectory $BackendDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $LogDir 'api.stdout.log') -RedirectStandardError (Join-Path $LogDir 'api.stderr.log')
     $Started += $ApiProcess
+    Save-StartedProcesses
+    $WorkerProcess = Start-Process -FilePath $PythonExe -ArgumentList '-m arq app.workers.arq_settings.WorkerSettings' -WorkingDirectory $BackendDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $LogDir 'worker.stdout.log') -RedirectStandardError (Join-Path $LogDir 'worker.stderr.log')
+    $Started += $WorkerProcess
     Save-StartedProcesses
     $WebProcess = Start-Process -FilePath $NodeExe -ArgumentList @(('"' + $ViteScript + '"'), '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $FrontendDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $LogDir 'web.stdout.log') -RedirectStandardError (Join-Path $LogDir 'web.stderr.log')
     $Started += $WebProcess
