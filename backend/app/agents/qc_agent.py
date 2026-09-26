@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from app.core.config import settings
 from app.core.errors import QCParseError
-from app.models.enums import QCSeverity, QCSuggestion, QCVerdict
+from app.models.enums import ProviderKind, QCSeverity, QCSuggestion, QCVerdict
+from app.providers.base import CallContext, ProviderRouter
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +144,26 @@ def build_qc_user_prompt(
     return "\n".join(parts)
 
 
+def _parse_operation_key(base: str, attempt: int) -> str:
+    suffix = f":parse-{attempt}"
+    return f"{base[: 120 - len(suffix)]}{suffix}"
+
+
 class QCAgent:
     """质检判定与决策树。
 
     视觉模型调用通过 VisionProvider 注入，便于测试时用假 Provider 替换。
     """
 
-    def __init__(self, vision_provider: Any | None = None, parse_max_retry: int = 2) -> None:
+    def __init__(
+        self,
+        vision_provider: Any | None = None,
+        *,
+        provider_router: ProviderRouter | None = None,
+        parse_max_retry: int = 2,
+    ) -> None:
         self.vision = vision_provider
+        self.router = provider_router
         self.parse_max_retry = parse_max_retry
 
     # ---------- 判定 ----------
@@ -165,14 +179,18 @@ class QCAgent:
         action_text: str,
         dialogue: str | None = None,
         has_baseline_frame: bool = False,
+        call_context: CallContext | None = None,
+        model: str | None = None,
     ) -> QCResult:
         """对一张关键帧做五维判定。
 
         image_paths: [基准帧?, 待判定帧]
         """
-        if self.vision is None:
+        if self.router is None and self.vision is None:
             msg = "VisionProvider 未注入，无法执行质检"
             raise QCParseError(msg)
+        if self.router is not None and call_context is None:
+            raise QCParseError("统一视觉路由必须提供 CallContext")
 
         user_prompt = build_qc_user_prompt(
             anchor_prompt=anchor_prompt,
@@ -187,11 +205,30 @@ class QCAgent:
         # 解析失败重试：结构化输出偶尔会返回带 markdown 包裹或多余文字
         last_error: Exception | None = None
         for attempt in range(1, self.parse_max_retry + 2):
-            result = await self.vision.judge(
-                system_prompt=QC_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                image_paths=image_paths,
-            )
+            if self.router is not None:
+                assert call_context is not None
+                # 每次解析尝试都是一次实际供应商调用，独立记账且可单独重放。
+                operation_key = _parse_operation_key(call_context.operation_key, attempt)
+                retry_context = replace(
+                    call_context, kind=ProviderKind.VISION, operation_key=operation_key[:120]
+                )
+                result = await self.router.generate(
+                    ProviderKind.VISION,
+                    {
+                        "model": model or settings.siliconflow_vision_model,
+                        "system_prompt": QC_SYSTEM_PROMPT,
+                        "user_prompt": user_prompt,
+                        "image_paths": image_paths,
+                    },
+                    retry_context,
+                )
+            else:
+                assert self.vision is not None
+                result = await self.vision.judge(
+                    system_prompt=QC_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    image_paths=image_paths,
+                )
             try:
                 return self.parse_and_decide(result.parsed or _extract_json(result.text or ""))
             except (QCParseError, ValueError, KeyError) as exc:

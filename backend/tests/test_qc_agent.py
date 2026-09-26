@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.agents.qc_agent import (
@@ -21,7 +23,8 @@ from app.agents.qc_agent import (
     build_qc_user_prompt,
 )
 from app.core.errors import QCParseError
-from app.models.enums import QCSeverity, QCSuggestion, QCVerdict
+from app.models.enums import ProviderKind, QCSeverity, QCSuggestion, QCVerdict
+from app.providers.base import CallContext
 
 
 def _dims(**overrides: float) -> dict:
@@ -325,3 +328,34 @@ def test_qc_result_helpers() -> None:
 
     blocked = QCResult(verdict=QCVerdict.BLOCKED, suggestion=QCSuggestion.MANUAL)
     assert not blocked.is_pass and blocked.needs_manual
+
+
+@pytest.mark.asyncio
+async def test_inspect_uses_router_with_distinct_parse_operation() -> None:
+    calls = []
+
+    class FakeRouter:
+        async def generate(self, kind, payload, context):
+            calls.append((kind, payload, context))
+            return SimpleNamespace(parsed=_raw(), text=None)
+
+    ctx = CallContext(
+        kind=ProviderKind.VISION,
+        project_id="project",
+        run_id="run",
+        operation_key="qc:shot-1",
+    )
+    result = await QCAgent(provider_router=FakeRouter()).inspect(
+        image_paths=["frame.png"],
+        anchor_prompt="x",
+        anchor_version=1,
+        shot_size="中景",
+        composition="c",
+        action_text="a",
+        call_context=ctx,
+    )
+
+    assert result.is_pass
+    assert len(calls) == 1
+    assert calls[0][0] is ProviderKind.VISION
+    assert calls[0][2].operation_key == "qc:shot-1:parse-1"
