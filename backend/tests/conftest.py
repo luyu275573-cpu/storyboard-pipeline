@@ -59,6 +59,7 @@ async def redis_test(monkeypatch):
     prefix = f"sbp_test:{uuid.uuid4().hex}:"
     monkeypatch.setattr(redis_client, "_pool", client)
     monkeypatch.setattr(redis_client, "KEY_SEMAPHORE", prefix + "lease:{provider}")
+    monkeypatch.setattr(redis_client, "KEY_RUN_PROGRESS", prefix + "progress:{run_id}")
     try:
         yield client
     finally:

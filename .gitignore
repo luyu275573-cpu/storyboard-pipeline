@@ -65,6 +65,8 @@ storage/projects/*
 !storage/projects/.gitkeep
 storage/assets/*
 !storage/assets/.gitkeep
+storage/refs/*
+!storage/refs/.gitkeep
 storage/renders/*
 !storage/renders/.gitkeep
 storage/exports/*

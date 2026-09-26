@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import { useState } from 'react'
+import type { FormEvent } from 'react'
+import { Dialog, Empty, Icon, useApi } from './ui'
+import References from './References'
+import Storyboard from './Storyboard'
 import { api, centsFromInput, money } from './api'
 import type { Budget, CallPage, Character, FeatureKey, Gate, Page, Preview, Project, Run } from './api'
 
@@ -19,45 +22,6 @@ const tabs = [
 ] as const
 type Tab = typeof tabs[number][0]
 type Modal = 'project' | 'character' | 'edit' | 'confirm' | 'preview' | null
-
-function useApi<T>(path: string | null, version: number) {
-  const [state, setState] = useState<{ data: T | null; error: string; loading: boolean }>({
-    data: null, error: '', loading: false,
-  })
-  useEffect(() => {
-    if (!path) { setState({ data: null, error: '', loading: false }); return }
-    const controller = new AbortController()
-    setState({ data: null, error: '', loading: true })
-    api<T>(path, { signal: controller.signal }).then(data => {
-      if (!controller.signal.aborted) setState({ data, error: '', loading: false })
-    }).catch(error => {
-      if (!controller.signal.aborted) setState({ data: null, error: String(error.message), loading: false })
-    })
-    return () => controller.abort()
-  }, [path, version])
-  return state
-}
-
-function Icon({ path }: { path: string }) {
-  return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={path} /></svg>
-}
-
-function Dialog({ title, busy, close, children }: { title: string; busy: boolean; close: () => void; children: ReactNode }) {
-  const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
-    const dialog = ref.current!
-    dialog.showModal()
-    return () => dialog.close()
-  }, [])
-  return <dialog ref={ref} aria-labelledby="dialog-title" onCancel={event => {
-    event.preventDefault(); if (!busy) close()
-  }}><div className="dialog-heading"><h2 id="dialog-title">{title}</h2>
-    <button className="icon-button" aria-label="关闭弹窗" disabled={busy} onClick={close}>×</button></div>{children}</dialog>
-}
-
-function Empty({ title, children }: { title: string; children: ReactNode }) {
-  return <div className="empty"><div className="empty-mark" aria-hidden="true">◇</div><h2>{title}</h2>{children}</div>
-}
 
 function parseFeatures(value: FormDataEntryValue | null): Record<string, string> {
   const result: Record<string, string> = Object.create(null)
@@ -91,6 +55,7 @@ export default function App() {
   const budget = useApi<Budget>(project && tab === 'budget' ? `/budget/${project.id}` : null, version)
   const calls = useApi<CallPage>(project && tab === 'budget' ? `/budget/${project.id}/calls?page=${callsPage}&limit=20` : null, version)
   const character = characters.data?.find(c => c.id === selectedCharacter) ?? characters.data?.[0]
+  const currentRun = runs.data?.[0]
   const run = runs.data?.find(r => r.current_stage === 'character' && r.status === 'waiting_gate')
   const confirmed = characters.data?.filter(c => c.confirmed).length ?? 0
   const refresh = () => setVersion(v => v + 1)
@@ -161,7 +126,7 @@ export default function App() {
       <div className="nav-caption">创作工作区</div><nav aria-label="主导航">{tabs.map(([key, label, path]) =>
         <button key={key} className={`nav-item ${tab === key ? 'active' : ''}`} aria-current={tab === key ? 'page' : undefined}
           onClick={() => { setTab(key); setNotice(''); setError('') }}><Icon path={path} />{label}</button>)}</nav>
-      <div className="sidebar-note"><span className="stage-dot" /> 本地工作区<p>先确认角色，再推进分镜</p><span className="version">准备阶段 · v0.1</span></div>
+      <div className="sidebar-note"><span className="stage-dot" /> 本地工作区<p>先确认角色，再推进分镜</p><span className="version">准备工作台 · v0.3</span></div>
     </aside>
     <main><header className="topbar"><div className="breadcrumb">工作台 <span>/</span><strong>{tabs.find(t => t[0] === tab)?.[1]}</strong></div>
       <div className="top-actions">{project && tab !== 'projects' && <span className="project-label">{project.title}</span>}
@@ -201,8 +166,9 @@ export default function App() {
                 {character.subjective_word_hits.length > 0 && <p className="warning-note">特征含主观词：{character.subjective_word_hits.join('、')}。建议改为可观察的具体描述。</p>}
                 <div className="prompt"><div className="section-heading"><h3>锚定描述</h3><button className="text-button" disabled={busy} onClick={() => void showPreview()}>预览完整提示词 ↗</button></div><p>{character.anchor_prompt}</p></div>
                 <div className="detail-footer"><p>{character.confirmed ? '修改特征会生成新版本，并要求重新确认。' : '请核对以上特征，确认后会保存当前版本的审核快照。'}</p><button className="button primary" disabled={character.confirmed || !run} onClick={() => openModal('confirm')}>{character.confirmed ? '✓ 当前版本已确认' : '审核并确认角色'}</button></div>
+                {currentRun && <References key={character.id} character={character} run={currentRun} version={version} refresh={refresh} />}
               </section></div>}
-            {!!gates.data?.length && <section className="panel audit-panel"><h2>审核记录</h2>{gates.data.map(gate => <div className="audit-row" key={gate.id}><span className="text-accent">✓</span><strong>{gate.snapshot.name}</strong><span>v{gate.snapshot.anchor_version}</span><span>{gate.reviewer} 确认</span><time>{new Date(`${gate.decided_at}Z`).toLocaleString('zh-CN')}</time></div>)}</section>}
+            {!!gates.data?.length && <section className="panel audit-panel"><h2>审核记录</h2>{gates.data.map(gate => <div className="audit-row" key={gate.id}><span className="text-accent">✓</span><strong>{gate.snapshot.name || ({character: '角色', reference: '参考图', storyboard: '分镜'}[gate.gate_type] || gate.gate_type)}</strong><span>v{gate.snapshot.anchor_version || gate.snapshot.storyboard_version}</span><span>{gate.reviewer} · {gate.status === 'approved' ? '通过' : '驳回'}</span><time>{new Date(`${gate.decided_at}Z`).toLocaleString('zh-CN')}</time></div>)}</section>}
           </> : tab === 'budget' ? <>
             {budget.loading && <p role="status">正在读取预算…</p>}
             {budget.data && <>{budget.data.billing_disputed && <p className="error-banner" role="alert">供应商账单超出预留报价，已暂停新调用。请先核实账单。</p>}<div className="summary-grid budget-metrics"><div className="metric"><span>项目预算</span><strong>{money(budget.data.budget_cents)}</strong><small>当前项目独立额度</small></div><div className="metric"><span>已花费</span><strong>{money(budget.data.spent_cents)}</strong><small>按实际调用账本统计</small></div><div className="metric"><span>已预留</span><strong>{money(budget.data.reserved_cents)}</strong><small>运行中或结果待确认的调用</small></div><div className="metric"><span>可用余额</span><strong className="text-accent">{money(budget.data.remaining_cents)}</strong><small>预算减去已花费与预留</small></div></div>
@@ -212,7 +178,7 @@ export default function App() {
                 {!!calls.data?.items.length && <div className="table-wrap"><table className="call-table"><thead><tr><th>供应商 / 模型</th><th>结果</th><th>已花费</th><th>已预留</th><th>供应商报账</th></tr></thead><tbody>{calls.data.items.map(call => <tr key={call.id}><td>{call.provider}<small className="call-model">{call.model}</small></td><td>{{calling:'处理中',unknown:'待对账',succeeded:'成功',failed:'失败'}[call.status] || call.status}</td><td>{money(call.cost_cents)}</td><td>{money(call.reserved_cents)}</td><td>{call.reported_cost_cents === null ? '待确认' : money(call.reported_cost_cents)}</td></tr>)}</tbody></table></div>}
                 {calls.data && (callsPage > 1 || calls.data.has_more) && <div className="pagination"><button className="button" disabled={callsPage === 1} onClick={() => setCallsPage(p => p - 1)}>上一页</button><span>第 {callsPage} 页</span><button className="button" disabled={!calls.data.has_more} onClick={() => setCallsPage(p => p + 1)}>下一页</button></div>}
               </section></>}
-          </> : <Empty title={tab === 'storyboard' ? '角色准备好后，故事将展开成镜头' : '质检从第一张真实关键帧开始'}><p>{tab === 'storyboard' ? '分镜编辑、B 关卡审核和生成任务将在后续批次接入。' : '五维质检、候选帧复核和评估报告将在生成链路接通后启用。'}</p><button className="button" onClick={() => setTab('characters')}>查看角色准备情况</button></Empty>}
+          </> : tab === 'storyboard' && currentRun ? <Storyboard key={project.id} project={project} run={currentRun} version={version} refresh={refresh} /> : <Empty title="质检从第一张真实关键帧开始"><p>五维判定规则已就绪。完成分镜审核并接入图像与视觉模型后，将在此展示真实报告和人工复核记录。</p><button className="button" onClick={() => setTab('storyboard')}>查看分镜准备情况</button></Empty>}
         </>}
         <footer className="page-footer">分镜流水线 <span>每一次生成，都有依据。</span></footer>
       </div>

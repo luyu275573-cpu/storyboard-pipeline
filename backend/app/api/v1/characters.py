@@ -2,11 +2,14 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_db
+from app.core.errors import AppError, NotFoundError
 from app.core.response import ok
 from app.knowledge.anchor import build_anchor_prompt, build_negative_prompt
 from app.models.domain import Character, CharacterRef
@@ -14,9 +17,9 @@ from app.schemas import (
     AnchorPreviewRequest,
     CharacterConfirm,
     CharacterCreate,
-    CharacterRefCreate,
     CharacterRefOut,
     CharacterUpdate,
+    ReferenceReview,
 )
 from app.services.catalog import (
     anchor_input,
@@ -26,6 +29,7 @@ from app.services.catalog import (
     project_or_404,
     save_character,
 )
+from app.services.reference_assets import add_reference, asset_file, review_reference
 
 router = APIRouter()
 
@@ -88,32 +92,50 @@ async def confirm_character(
     return ok(character_data(await confirm_character_version(db, character_id, body)))
 
 
-# ==================== 基准图（第 2 级锚定）====================
-
-
-@router.post("/{character_id}/refs", summary="上传角色基准图")
+@router.post("/{character_id}/refs", summary="上传参考图原始文件", status_code=201)
 async def add_ref(
-    character_id: str, body: CharacterRefCreate, db: AsyncSession = Depends(get_db)
+    character_id: str,
+    request: Request,
+    ref_type: str = Query(max_length=40),
+    anchor_version: int = Query(ge=1),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """登记基准图。
-
-    TODO(impl):
-      1. 计算文件 sha256 存 asset_sha256（去重与幂等用）
-      2. qc_passed 默认 False —— 基准图本身必须先过质检，
-         基准图有畸形则后续全崩，这是第一周要先做的事
-      3. is_primary=True 时把同角色其他主基准图置 False
-      4. 返回 CharacterRefOut
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    limit = settings.max_upload_mb * 1024 * 1024
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > limit:
+            raise AppError(f"文件不能超过 {settings.max_upload_mb} MB")
+        data.extend(chunk)
+    ref = await add_reference(db, character_id, anchor_version, ref_type, bytes(data))
+    return ok(CharacterRefOut.model_validate(ref).model_dump(mode="json"))
 
 
-@router.get("/{character_id}/refs", summary="基准图列表")
+@router.get("/{character_id}/refs", summary="参考图列表")
 async def list_refs(character_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): 按 ref_type 分组返回。"""
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    await character_or_404(db, character_id)
+    refs = await db.scalars(
+        select(CharacterRef)
+        .where(CharacterRef.character_id == character_id)
+        .order_by(CharacterRef.created_at, CharacterRef.id)
+    )
+    return ok([CharacterRefOut.model_validate(r).model_dump(mode="json") for r in refs])
 
 
-@router.post("/refs/{ref_id}/qc-pass", summary="标记基准图质检通过")
-async def pass_ref_qc(ref_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): qc_passed = True。未通过的基准图不允许用于生成。"""
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+@router.post("/refs/{ref_id}/review", summary="参考图人工审核与主参考选择")
+async def review_ref(
+    ref_id: str, body: ReferenceReview, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    return ok(
+        CharacterRefOut.model_validate(await review_reference(db, ref_id, body)).model_dump(mode="json")
+    )
+
+
+@router.get("/refs/{ref_id}/asset", summary="读取已登记的参考图")
+async def get_ref_asset(ref_id: str, db: AsyncSession = Depends(get_db)) -> FileResponse:
+    import asyncio
+
+    ref = await db.get(CharacterRef, ref_id)
+    if ref is None:
+        raise NotFoundError("参考图不存在")
+    path = await asyncio.to_thread(asset_file, ref)
+    return FileResponse(path, media_type="image/png", headers={"X-Content-Type-Options": "nosniff"})

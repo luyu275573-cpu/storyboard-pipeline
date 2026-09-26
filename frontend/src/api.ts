@@ -1,14 +1,14 @@
 export type Project = {
   id: string; title: string; synopsis: string | null; style: string; budget_cents: number;
-  status: string; created_at: string; updated_at: string
+  storyboard_version: number; status: string; created_at: string; updated_at: string
 }
 export type FeatureKey = 'face_features' | 'hair_features' | 'body_features' | 'outfit_features' | 'style_lock'
 export type Character = Record<FeatureKey, Record<string, string>> & {
   id: string; project_id: string; name: string; anchor_prompt: string; anchor_version: number;
   confirmed: boolean; subjective_word_hits: string[]
 }
-export type Run = { id: string; status: string; current_stage: string }
-export type Gate = { id: string; reviewer: string; decided_at: string; snapshot: Character }
+export type Run = { id: string; status: string; current_stage: string; graph_state: { blockers?: string[] }; error_message: string | null }
+export type Gate = { id: string; gate_type: string; status: string; reviewer: string; note: string; decided_at: string; snapshot: Partial<Character> & { storyboard_version?: number } }
 export type Budget = {
   budget_cents: number; spent_cents: number; reserved_cents: number; remaining_cents: number; ratio: number;
   billing_disputed: boolean;
@@ -24,7 +24,7 @@ export type Preview = { anchor_prompt: string; negative_prompt: string; subjecti
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
-    ...options, headers: { 'Content-Type': 'application/json', ...options.headers },
+    ...options, headers: { 'Content-Type': options.body instanceof Blob ? options.body.type || 'application/octet-stream' : 'application/json', ...options.headers },
     signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
   })
   const result = await response.json().catch(() => null)
@@ -46,4 +46,24 @@ export function centsFromInput(value: string): number {
   const cents = Number(whole) * 100 + Number(decimals.padEnd(2, '0'))
   if (cents > 20000) throw new Error('项目预算上限为 ¥200.00')
   return cents
+}
+
+export type Reference = {
+  id: string; ref_type: string; asset_sha256: string; qc_passed: boolean; is_primary: boolean;
+  reviewed_anchor_version: number | null; reviewed_by: string | null; review_note: string | null;
+  review_version: number
+}
+export type Scene = {
+  id: string; project_id: string; seq: number; location: string; time_of_day: string;
+  mood: string; background_prompt: string | null
+}
+export type Shot = {
+  id: string; scene_id: string; seq: number; shot_size: string; camera_move: string | null;
+  composition: string; character_ids: string[]; action_text: string; dialogue: string | null;
+  duration_ms: number; negative_prompt: string | null; version: number; status: string
+}
+export type Board = {
+  project_id: string; run_id: string; storyboard_version: number; characters: Character[];
+  references: Reference[]; scenes: Scene[]; shots: Shot[]; blockers: string[]; characters_ready: boolean;
+  gate: { id: string; status: string } | null
 }

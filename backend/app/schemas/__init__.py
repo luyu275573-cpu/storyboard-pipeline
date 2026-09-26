@@ -50,6 +50,7 @@ class ProjectOut(ORMModel):
     global_negative_prompt: str | None
     status: str
     budget_cents: int
+    storyboard_version: int
     created_at: datetime
     updated_at: datetime
 
@@ -110,11 +111,15 @@ class CharacterOut(ORMModel):
     confirmed_at: datetime | None
 
 
-class CharacterRefCreate(BaseModel):
-    ref_type: str = Field(description="front_half/side_half/full_body/expression_*")
-    asset_path: str
-    ref_weight: float = Field(default=1.0, ge=0, le=2.0)
+class ReferenceReview(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    run_id: str = Field(min_length=1, max_length=36)
+    anchor_version: int = Field(ge=1)
+    expected_review_version: int = Field(ge=0)
+    passed: bool
     is_primary: bool = False
+    reviewer: str = Field(min_length=1, max_length=80)
+    note: str = Field(min_length=1, max_length=2000)
 
 
 class CharacterRefOut(ORMModel):
@@ -126,6 +131,12 @@ class CharacterRefOut(ORMModel):
     ref_weight: float
     qc_passed: bool
     is_primary: bool
+    uploaded_anchor_version: int
+    reviewed_anchor_version: int | None
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+    review_note: str | None
+    review_version: int
 
 
 class AnchorPreview(BaseModel):
@@ -142,17 +153,62 @@ class AnchorPreview(BaseModel):
 # ==================== 分镜镜头 ====================
 
 
+class SceneCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    project_id: str = Field(min_length=1, max_length=36)
+    seq: int = Field(ge=1, le=10000)
+    location: str = Field(min_length=1, max_length=200)
+    time_of_day: str = Field(default="day", min_length=1, max_length=40)
+    mood: str = Field(default="", max_length=80)
+    background_prompt: str | None = Field(default=None, max_length=4000)
+
+
+class SceneUpdate(SceneCreate):
+    expected_storyboard_version: int = Field(ge=1)
+
+
+class SceneOut(ORMModel):
+    id: str
+    project_id: str
+    seq: int
+    location: str
+    time_of_day: str
+    mood: str
+    background_prompt: str | None
+
+
 class ShotCreate(BaseModel):
-    scene_id: str
-    seq: int = Field(ge=1)
-    shot_size: str = Field(default="中景", description="特写/近景/中景/全景/远景")
-    camera_move: str | None = None
-    composition: str = ""
-    character_ids: list[str] = Field(default_factory=list)
-    action_text: str = ""
-    dialogue: str | None = None
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    scene_id: str = Field(min_length=1, max_length=36)
+    seq: int = Field(ge=1, le=10000)
+    shot_size: Literal["特写", "近景", "中景", "全景", "远景"] = "中景"
+    camera_move: str | None = Field(default=None, max_length=40)
+    composition: str = Field(min_length=1, max_length=4000)
+    character_ids: list[str] = Field(default_factory=list, max_length=20)
+    action_text: str = Field(min_length=1, max_length=4000)
+    dialogue: str | None = Field(default=None, max_length=4000)
     duration_ms: int = Field(default=5000, ge=500, le=60000)
-    negative_prompt: str | None = None
+    negative_prompt: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("character_ids")
+    @classmethod
+    def unique_characters(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("镜头中的角色不可重复")
+        return value
+
+
+class ShotUpdate(ShotCreate):
+    expected_version: int = Field(ge=1)
+
+
+class StoryboardDecision(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    run_id: str = Field(min_length=1, max_length=36)
+    storyboard_version: int = Field(ge=1)
+    status: Literal["approved", "rejected"]
+    reviewer: str = Field(min_length=1, max_length=80)
+    note: str = Field(min_length=1, max_length=2000)
 
 
 class ShotOut(ORMModel):
@@ -166,6 +222,7 @@ class ShotOut(ORMModel):
     action_text: str
     dialogue: str | None
     duration_ms: int
+    negative_prompt: str | None
     status: str
     retry_count: int
     max_retry: int
@@ -325,6 +382,7 @@ class RunOut(ORMModel):
     project_id: str
     status: str
     current_stage: str | None
+    graph_state: dict[str, Any]
     spent_cents: int
     error_code: str | None
     error_message: str | None

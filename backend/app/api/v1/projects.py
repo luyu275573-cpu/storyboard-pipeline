@@ -8,12 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
-from app.core.errors import AppError
+from app.core.errors import NotFoundError
 from app.core.response import ok
 from app.models.domain import PipelineRun, Project, ReviewGate
 from app.models.tracking import BudgetLedger
-from app.schemas import GateOut, ProjectCreate, ProjectOut, RunOut
+from app.schemas import GateOut, ProjectCreate, ProjectOut, RunOut, StoryboardDecision
 from app.services.catalog import project_or_404
+from app.services.preparation import advance_preparation, board_snapshot, decide_storyboard, get_run
 
 router = APIRouter()
 
@@ -76,10 +77,66 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)) -> di
     return ok(ProjectOut.model_validate(await project_or_404(db, project_id)).model_dump(mode="json"))
 
 
-@router.post("/{project_id}/runs", summary="启动生成（后续批次）")
+async def publish_run(db: AsyncSession, run: PipelineRun) -> None:
+    import logging
+
+    from app.core.redis_client import publish_progress
+
+    # MySQL 是恢复依据。提交成功后再广播；Redis 短暂离线不回滚已保存的人工决定。
+    data = RunOut.model_validate(run).model_dump(mode="json")
+    await db.commit()
+    try:
+        await publish_progress(run.id, run.current_stage or "preparation", data)
+    except Exception:
+        logging.getLogger(__name__).warning("进度广播暂不可用 run_id=%s", run.id)
+
+
+@router.get("/{project_id}/storyboard", summary="读取准备清单与分镜版本")
+async def get_storyboard(project_id: str, run_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    project = await project_or_404(db, project_id, lock=True)
+    run = await get_run(db, project, run_id)
+    return ok(await board_snapshot(db, project, run.id))
+
+
+@router.post("/{project_id}/storyboard/review", summary="B 关卡：审核当前分镜版本")
+async def review_storyboard(
+    project_id: str, body: StoryboardDecision, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    project = await project_or_404(db, project_id, lock=True)
+    gate = await decide_storyboard(db, project, body)
+    result = GateOut.model_validate(gate).model_dump(mode="json")
+    run = await get_run(db, project, body.run_id)
+    await publish_run(db, run)
+    return ok(result)
+
+
+@router.post("/{project_id}/runs/{run_id}/resume", summary="检查准备项并恢复至下一待办关卡")
+async def resume_run(project_id: str, run_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    project = await project_or_404(db, project_id, lock=True)
+    run = await get_run(db, project, run_id)
+    await advance_preparation(db, project, run)
+    result = RunOut.model_validate(run).model_dump(mode="json")
+    await publish_run(db, run)
+    return ok(result)
+
+
+@router.post("/{project_id}/runs", summary="继续项目的准备运行")
 async def start_run(project_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    await project_or_404(db, project_id)
-    raise AppError("生成链路尚未启用，请先完成角色建档与确认")
+    project = await project_or_404(db, project_id, lock=True)
+    run = await db.scalar(
+        select(PipelineRun)
+        .where(PipelineRun.project_id == project.id)
+        .order_by(PipelineRun.created_at.desc(), PipelineRun.id)
+        .with_for_update()
+        .limit(1)
+    )
+    if run is None:
+        raise NotFoundError("项目没有可恢复的准备运行")
+    await get_run(db, project, run.id)
+    await advance_preparation(db, project, run)
+    result = RunOut.model_validate(run).model_dump(mode="json")
+    await publish_run(db, run)
+    return ok(result)
 
 
 @router.get("/{project_id}/runs", summary="运行历史")

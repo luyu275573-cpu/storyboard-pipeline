@@ -32,7 +32,7 @@ function Save-StartedProcesses {
     $Records = @($Started | ForEach-Object {
         $Entry = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)"
         if ($Entry) {
-            @{ processId = $_.Id; created = $Entry.CreationDate.ToUniversalTime().ToString('o'); command = $Entry.CommandLine }
+            @{ processId = $_.Id; createdTicks = $Entry.CreationDate.ToUniversalTime().Ticks.ToString(); command = $Entry.CommandLine }
         }
     })
     ConvertTo-Json -InputObject $Records | Set-Content -LiteralPath $RecordFile -Encoding UTF8

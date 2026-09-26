@@ -3,7 +3,7 @@
 提供三类能力：
 1. 通用异步客户端
 2. 供应商并发租约（独立令牌、续租、条件释放）
-3. 进度队列（M4 将替换为广播重放）；付费幂等由 MySQL 负责
+3. 可广播与重放的进度流；付费幂等由 MySQL 负责
 """
 
 from __future__ import annotations
@@ -170,23 +170,49 @@ async def provider_semaphore(
 # ==================== 进度推送（SSE 数据源）====================
 
 
-async def publish_progress(run_id: str, stage: str, payload: dict) -> None:
-    """写进度到 Redis Hash 并推入 List 供 SSE 消费。"""
-    r = get_redis()
-    pkey = KEY_RUN_PROGRESS.format(run_id=run_id)
+_PUBLISH = """
+local id = redis.call('XADD', KEYS[2], 'MAXLEN', 500, '*', 'data', ARGV[2])
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2], '__last_id__', id)
+if ARGV[3] ~= '' then redis.call('HSET', KEYS[1], '__status__', ARGV[3]) end
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+return id
+"""
 
-    await cast(Awaitable[int], r.hset(pkey, stage, json.dumps(payload, ensure_ascii=False)))
-    await r.expire(pkey, TTL_PROGRESS)
-    await cast(
-        Awaitable[int], r.rpush(f"{pkey}:events", json.dumps({"stage": stage, **payload}, ensure_ascii=False))
+
+def progress_keys(run_id: str) -> tuple[str, str]:
+    key = KEY_RUN_PROGRESS.format(run_id=run_id)
+    return key, key + ":events:v2"
+
+
+async def publish_progress(run_id: str, stage: str, payload: dict) -> str:
+    """一个事件供所有客户端读取；Hash 与 Stream 同一个 Lua 操作更新。"""
+    pkey, events_key = progress_keys(run_id)
+    data = json.dumps({**payload, "run_id": run_id, "stage": stage}, ensure_ascii=False)
+    return await cast(
+        Awaitable[str],
+        get_redis().eval(
+            _PUBLISH, 2, pkey, events_key, stage, data, payload.get("status", ""), str(TTL_PROGRESS)
+        ),
     )
-    await r.expire(f"{pkey}:events", TTL_PROGRESS)
-    await cast(Awaitable[str], r.ltrim(f"{pkey}:events", -500, -1))  # 只保留最近 500 条，防内存膨胀
 
 
-async def consume_progress(run_id: str, timeout_s: float = 15.0) -> list[str]:
-    """阻塞读取进度事件（SSE 用）。"""
-    r = get_redis()
-    pkey = f"{KEY_RUN_PROGRESS.format(run_id=run_id)}:events"
-    result = await cast(Awaitable[list[str]], r.blpop([pkey], timeout=int(timeout_s)))
-    return [result[1]] if result else []
+async def consume_progress(
+    run_id: str, after_id: str = "0-0", timeout_s: float = 4.0
+) -> list[tuple[str, str]]:
+    """XREAD 不删除消息；每个订阅者自行保存游标。阻塞时间小于客户端 socket 超时。"""
+    _, events_key = progress_keys(run_id)
+    result = await get_redis().xread(
+        {events_key: after_id}, count=100, block=max(1, min(int(timeout_s * 1000), 4000))
+    )
+    return [(event_id, fields["data"]) for _, rows in result for event_id, fields in rows]
+
+
+async def progress_bounds(run_id: str) -> tuple[str | None, str | None]:
+    _, key = progress_keys(run_id)
+    # MULTI 保证检测保留窗口时首尾来自同一状态。
+    async with get_redis().pipeline(transaction=True) as pipe:
+        pipe.xrange(key, count=1)
+        pipe.xrevrange(key, count=1)
+        first, last = await pipe.execute()
+    return (first[0][0] if first else None, last[0][0] if last else None)

@@ -45,6 +45,7 @@ class Project(Base):
     global_negative_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="draft")
     budget_cents: Mapped[int] = mapped_column(Integer, default=0)
+    storyboard_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -98,6 +99,7 @@ class CharacterRef(Base):
     """
 
     __tablename__ = "character_refs"
+    __table_args__ = (UniqueConstraint("character_id", "asset_sha256", name="uq_refs_character_hash"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     character_id: Mapped[str] = mapped_column(
@@ -112,6 +114,13 @@ class CharacterRef(Base):
     qc_passed: Mapped[bool] = mapped_column(Boolean, default=False)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    uploaded_anchor_version: Mapped[int] = mapped_column(Integer, default=1)
+    reviewed_anchor_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_version: Mapped[int] = mapped_column(Integer, default=0)
 
     character: Mapped[Character] = relationship(back_populates="refs")
 

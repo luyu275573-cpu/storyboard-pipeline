@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError, ConflictError, NotFoundError
 from app.knowledge.anchor import AnchorInput, _check_subjective, build_anchor_prompt
 from app.models import load_all_models
-from app.models.domain import Character, PipelineRun, Project, ReviewGate
+from app.models.domain import Character, CharacterRef, PipelineRun, Project, ReviewGate
 from app.schemas import CharacterConfirm, CharacterCreate, CharacterOut, CharacterUpdate
+from app.services.preparation import ensure_editable, invalidate_board
 
 load_all_models()
 FEATURES = ("face_features", "hair_features", "body_features", "outfit_features", "style_lock")
@@ -58,7 +59,8 @@ async def flush_character(db: AsyncSession) -> None:
 async def save_character(
     db: AsyncSession, body: CharacterCreate | CharacterUpdate, character_id: str | None = None
 ) -> Character:
-    await project_or_404(db, body.project_id, lock=True)
+    project = await project_or_404(db, body.project_id, lock=True)
+    await ensure_editable(db, project)
     # 全部修改和确认均先锁项目，角色读取不能使用锁前的旧快照。
     if character_id:
         character = await character_or_404(db, character_id)
@@ -78,6 +80,14 @@ async def save_character(
         raise AppError("角色特征总长度过大，请精简描述后重试")
     character.confirmed = False
     character.confirmed_at = None
+    await invalidate_board(db, project, character_changed=True)
+    if character_id:
+        refs = await db.scalars(
+            select(CharacterRef).where(CharacterRef.character_id == character_id).with_for_update()
+        )
+        for ref in refs:
+            ref.qc_passed = False
+            ref.is_primary = False
     await flush_character(db)
     return character
 

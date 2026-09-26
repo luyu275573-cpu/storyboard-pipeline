@@ -4,44 +4,115 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.scenes import flush_sequence
+from app.core.config import settings
 from app.core.db import get_db
-from app.schemas import GateDecision, RenderRequest, ShotCreate
+from app.core.errors import AppError, ConflictError, NotFoundError
+from app.core.response import ok
+from app.models.domain import Character, Scene, Shot
+from app.models.tracking import RenderAttempt
+from app.schemas import AttemptOut, GateDecision, RenderRequest, ShotCreate, ShotOut, ShotUpdate
+from app.services.catalog import project_or_404
+from app.services.preparation import ensure_editable, invalidate_board
 
 router = APIRouter()
 
 
-@router.post("", summary="创建分镜镜头")
+async def save_shot(db: AsyncSession, body: ShotCreate | ShotUpdate, shot_id: str | None = None) -> Shot:
+    project_id = await db.scalar(select(Scene.project_id).where(Scene.id == body.scene_id))
+    if not project_id:
+        raise NotFoundError("场景不存在")
+    project = await project_or_404(db, project_id, lock=True)
+    await ensure_editable(db, project)
+    scene = await db.scalar(select(Scene).where(Scene.id == body.scene_id).with_for_update())
+    if scene is None:
+        raise NotFoundError("场景不存在")
+    characters = list(
+        await db.scalars(
+            select(Character.id)
+            .where(Character.project_id == project.id, Character.id.in_(body.character_ids))
+            .with_for_update()
+        )
+    )
+    if set(characters) != set(body.character_ids):
+        raise AppError("镜头只能使用本项目的角色")
+    if shot_id:
+        shot = await db.scalar(select(Shot).where(Shot.id == shot_id).with_for_update())
+        if shot is None or shot.scene_id != body.scene_id:
+            raise NotFoundError("此场景中不存在该镜头；跨场景移动需重新建立镜头")
+        if not isinstance(body, ShotUpdate) or shot.version != body.expected_version:
+            raise ConflictError("镜头已更新，请刷新后重试")
+        shot.version += 1
+    else:
+        count = await db.scalar(
+            select(func.count()).select_from(Shot).join(Scene).where(Scene.project_id == project.id)
+        )
+        if count and count >= 200:
+            raise AppError("每个项目最多 200 个镜头")
+        shot = Shot(max_retry=settings.shot_max_retry)
+        db.add(shot)
+    for key, value in body.model_dump(exclude={"expected_version"}).items():
+        setattr(shot, key, value)
+    await invalidate_board(db, project)
+    await flush_sequence(db)
+    return shot
+
+
+@router.post("", summary="创建分镜镜头", status_code=201)
 async def create_shot(body: ShotCreate, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl):
-    1. 校验 scene_id 存在、seq 在同场景内唯一（撞唯一索引则抛 ConflictError）
-    2. max_retry 取 settings.shot_max_retry
-    3. 若同场景已有合格帧，自动写入 prev_locked_attempt_id（第 3 级锚定：时序递延）
-    4. 返回 ShotOut
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    return ok(ShotOut.model_validate(await save_shot(db, body)).model_dump(mode="json"))
+
+
+@router.put("/{shot_id}", summary="编辑镜头并使旧 B 审核失效")
+async def update_shot(shot_id: str, body: ShotUpdate, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    return ok(ShotOut.model_validate(await save_shot(db, body, shot_id)).model_dump(mode="json"))
+
+
+@router.delete("/{shot_id}", summary="删除未生成的镜头")
+async def delete_shot(
+    shot_id: str, expected_version: int = Query(ge=1), db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    project_id = await db.scalar(select(Scene.project_id).join(Shot).where(Shot.id == shot_id))
+    if not project_id:
+        raise NotFoundError("镜头不存在")
+    project = await project_or_404(db, project_id, lock=True)
+    await ensure_editable(db, project)
+    shot = await db.scalar(select(Shot).where(Shot.id == shot_id).with_for_update())
+    if shot is None:
+        raise NotFoundError("镜头不存在")
+    if shot.version != expected_version:
+        raise ConflictError("镜头已更新，请刷新后重试")
+    if await db.scalar(
+        select(RenderAttempt.id).where(RenderAttempt.shot_id == shot_id).with_for_update().limit(1)
+    ):
+        raise ConflictError("已产生生成记录的镜头不能删除，请保留审计记录")
+    await db.delete(shot)
+    await invalidate_board(db, project)
+    await db.flush()
+    return ok({"deleted": shot_id})
 
 
 @router.get("", summary="镜头列表")
 async def list_shots(
-    scene_id: str | None = None,
-    project_id: str | None = None,
-    status: str | None = None,
-    db: AsyncSession = Depends(get_db),
+    project_id: str, scene_id: str | None = None, db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
-    """TODO(impl): 按 scene_id / project_id / status 过滤，按 (scene.seq, shot.seq) 排序。
-
-    注意排序不是按镜头序号，而是按场景分组——同场景集中生成是色彩一致性的前提。
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    await project_or_404(db, project_id)
+    query = select(Shot).join(Scene).where(Scene.project_id == project_id).order_by(Scene.seq, Shot.seq)
+    if scene_id:
+        query = query.where(Shot.scene_id == scene_id)
+    return ok([ShotOut.model_validate(s).model_dump(mode="json") for s in await db.scalars(query)])
 
 
 @router.get("/{shot_id}", summary="镜头详情")
 async def get_shot(shot_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): 含 attempts 与最新 qc_report。"""
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    shot = await db.get(Shot, shot_id)
+    if shot is None:
+        raise NotFoundError("镜头不存在")
+    return ok(ShotOut.model_validate(shot).model_dump(mode="json"))
 
 
 @router.post("/{shot_id}/render", summary="触发抽卡")
@@ -52,7 +123,7 @@ async def render_shot(
 
     TODO(impl):
       1. 校验镜头所属角色已 confirmed（人机关卡 A），否则抛 GatePendingError
-      2. 校验预算：CostService.precheck(project_id, estimated_cents)
+      2. 校验预算：ProviderRouter 调用前通过 CostService.begin_call 预留预算
       3. 校验 retry_count < max_retry，超限抛 MaxRetryError（挂起转人工，不静默失败）
       4. 镜头级互斥锁 lock:shot:{shot_id}，防并发重复抽卡
       5. 组装 anchor_prompt（按 body.anchor_level / strengthen_fields）
@@ -62,17 +133,17 @@ async def render_shot(
     ⚠️ 不要在此同步调用 Provider。图像生成秒级、视频分钟级，
        同步等待会占满 worker 并触发 HTTP 超时。必须走队列。
     """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
 
 
 @router.get("/{shot_id}/attempts", summary="抽卡历史")
 async def list_attempts(shot_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): 返回 AttemptOut 列表，按 attempt_no 升序。
-
-    这是 Trace 的入口：每条 attempt 都能追到 request_payload、anchor_version、
-    cost_cents、qc_report，回答"这张废片当时用的什么参数"。
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    if await db.get(Shot, shot_id) is None:
+        raise NotFoundError("镜头不存在")
+    rows = await db.scalars(
+        select(RenderAttempt).where(RenderAttempt.shot_id == shot_id).order_by(RenderAttempt.attempt_no)
+    )
+    return ok([AttemptOut.model_validate(row).model_dump(mode="json") for row in rows])
 
 
 @router.post("/{shot_id}/gate/compliance", summary="人机关卡 C：先审后播合规终审")
@@ -89,7 +160,7 @@ async def compliance_gate(
       4. 被 QC 判 blocked（合规拦截）的镜头禁止在此放行，必须重新生成
          —— 对应 2025.9《管理提示（动画微短剧管理）》的"先审后播"要求
     """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
 
 
 @router.post("/{shot_id}/video", summary="触发视频生成")
@@ -100,7 +171,7 @@ async def generate_video(shot_id: str, db: AsyncSession = Depends(get_db)) -> di
     3. 投递 ARQ 任务，分层超时：单次请求 < 任务总超时 < 前端等待
     4. 预算不足时降级：降分辨率 / 换便宜供应商 / 挂起，不直接失败
     """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
 
 
 @router.post("/synthesize", summary="FFmpeg 时间轴合成")
@@ -116,4 +187,4 @@ async def synthesize(
     注意：FFmpeg 是子进程调用，必须用 asyncio.create_subprocess_exec，
     不能用 subprocess.run（会阻塞事件循环）。设置超时与取消令牌。
     """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
