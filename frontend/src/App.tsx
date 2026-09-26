@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { api, centsFromInput, money } from './api'
-import type { Budget, Character, FeatureKey, Gate, Page, Preview, Project, Run } from './api'
+import type { Budget, CallPage, Character, FeatureKey, Gate, Page, Preview, Project, Run } from './api'
 
 const groups: [FeatureKey, string, string][] = [
   ['face_features', '面部特征', '脸型=鹅蛋脸\n眼睛=深棕色杏眼'],
@@ -75,6 +75,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('projects')
   const [version, setVersion] = useState(0)
   const [page, setPage] = useState(1)
+  const [callsPage, setCallsPage] = useState(1)
   const [search, setSearch] = useState('')
   const [project, setProject] = useState<Project | null>(null)
   const [selectedCharacter, setSelectedCharacter] = useState('')
@@ -87,14 +88,15 @@ export default function App() {
   const characters = useApi<Character[]>(project ? `/characters?project_id=${project.id}` : null, version)
   const runs = useApi<Run[]>(project ? `/projects/${project.id}/runs` : null, version)
   const gates = useApi<Gate[]>(project ? `/projects/${project.id}/gates` : null, version)
-  const budget = useApi<Budget>(project ? `/budget/${project.id}` : null, version)
+  const budget = useApi<Budget>(project && tab === 'budget' ? `/budget/${project.id}` : null, version)
+  const calls = useApi<CallPage>(project && tab === 'budget' ? `/budget/${project.id}/calls?page=${callsPage}&limit=20` : null, version)
   const character = characters.data?.find(c => c.id === selectedCharacter) ?? characters.data?.[0]
   const run = runs.data?.find(r => r.current_stage === 'character' && r.status === 'waiting_gate')
   const confirmed = characters.data?.filter(c => c.confirmed).length ?? 0
   const refresh = () => setVersion(v => v + 1)
   const openModal = (value: Modal) => { setError(''); setNotice(''); setModal(value) }
   const chooseProject = (value: Project) => {
-    setProject(value); setSelectedCharacter(''); setTab('characters'); setNotice(''); setError('')
+    setProject(value); setCallsPage(1); setSelectedCharacter(''); setTab('characters'); setNotice(''); setError('')
   }
   async function perform(action: () => Promise<void>) {
     setBusy(true); setError('')
@@ -151,7 +153,7 @@ export default function App() {
   }
 
   const activeDataError = tab === 'projects' ? projects.error
-    : characters.error || runs.error || gates.error || budget.error
+    : characters.error || runs.error || gates.error || budget.error || calls.error
 
   return <div className="app-shell">
     <aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); setTab('projects') }}>
@@ -203,8 +205,13 @@ export default function App() {
             {!!gates.data?.length && <section className="panel audit-panel"><h2>审核记录</h2>{gates.data.map(gate => <div className="audit-row" key={gate.id}><span className="text-accent">✓</span><strong>{gate.snapshot.name}</strong><span>v{gate.snapshot.anchor_version}</span><span>{gate.reviewer} 确认</span><time>{new Date(`${gate.decided_at}Z`).toLocaleString('zh-CN')}</time></div>)}</section>}
           </> : tab === 'budget' ? <>
             {budget.loading && <p role="status">正在读取预算…</p>}
-            {budget.data && <><div className="summary-grid"><div className="metric"><span>项目预算</span><strong>{money(budget.data.budget_cents)}</strong><small>当前项目独立额度</small></div><div className="metric"><span>已花费</span><strong>{money(budget.data.spent_cents)}</strong><small>按实际调用账本统计</small></div><div className="metric"><span>剩余预算</span><strong className="text-accent">{money(budget.data.remaining_cents)}</strong><small>尚未启用付费生成</small></div></div>
-              <section className="panel"><div className="section-heading"><h2>预算使用情况</h2><span>{(budget.data.ratio * 100).toFixed(1)}%</span></div><progress max="1" value={budget.data.ratio} aria-label="预算使用比例" /><p className="muted">70% 预警 · 90% 降级 · 上限停止新调用</p><div className="table-wrap"><table><thead><tr><th>预算范围</th><th>已使用</th><th>上限</th></tr></thead><tbody>{budget.data.ledgers.map(row => <tr key={`${row.scope}/${row.scope_key}`}><td>{{total: '项目总额', image: '图像生成', video: '视频生成', vision: '视觉质检', llm: '剧本与分镜'}[row.scope_key] || row.scope_key}</td><td>{money(row.spent_cents)}</td><td>{money(row.budget_cents)}</td></tr>)}</tbody></table></div><p className="muted">类型额度受项目总额共同约束，不能相加当作可用预算。</p></section><Empty title="费用趋势将在首次生成后出现"><p>当前没有模型调用记录，成功率与预计节省暂不计算。</p></Empty></>}
+            {budget.data && <>{budget.data.billing_disputed && <p className="error-banner" role="alert">供应商账单超出预留报价，已暂停新调用。请先核实账单。</p>}<div className="summary-grid budget-metrics"><div className="metric"><span>项目预算</span><strong>{money(budget.data.budget_cents)}</strong><small>当前项目独立额度</small></div><div className="metric"><span>已花费</span><strong>{money(budget.data.spent_cents)}</strong><small>按实际调用账本统计</small></div><div className="metric"><span>已预留</span><strong>{money(budget.data.reserved_cents)}</strong><small>运行中或结果待确认的调用</small></div><div className="metric"><span>可用余额</span><strong className="text-accent">{money(budget.data.remaining_cents)}</strong><small>预算减去已花费与预留</small></div></div>
+              <section className="panel"><div className="section-heading"><h2>预算使用情况</h2><span>{(budget.data.ratio * 100).toFixed(1)}%</span></div><progress max="1" value={budget.data.ratio} aria-label="预算占用比例" /><p className="muted">占用 = 已花费 + 已预留；未知结果核实后再释放额度</p><div className="table-wrap"><table><thead><tr><th>预算范围</th><th>已花费</th><th>已预留</th><th>上限</th></tr></thead><tbody>{budget.data.ledgers.map(row => <tr key={`${row.scope}/${row.scope_key}`}><td>{{total: '项目总额', image: '图像生成', video: '视频生成', vision: '视觉质检', llm: '剧本与分镜'}[row.scope_key] || row.scope_key}</td><td>{money(row.spent_cents)}</td><td>{money(row.reserved_cents)}</td><td>{money(row.budget_cents)}</td></tr>)}</tbody></table></div><p className="muted">类型额度受项目总额共同约束，不能相加当作可用预算。</p></section><section className="panel"><div className="section-heading"><h2>模型调用记录</h2><button className="button" onClick={refresh}>刷新</button></div>
+                {calls.loading && <p role="status">正在读取调用记录…</p>}
+                {calls.data && !calls.data.items.length && <p className="muted">尚无模型调用。真实生成将在后续批次接入。</p>}
+                {!!calls.data?.items.length && <div className="table-wrap"><table className="call-table"><thead><tr><th>供应商 / 模型</th><th>结果</th><th>已花费</th><th>已预留</th><th>供应商报账</th></tr></thead><tbody>{calls.data.items.map(call => <tr key={call.id}><td>{call.provider}<small className="call-model">{call.model}</small></td><td>{{calling:'处理中',unknown:'待对账',succeeded:'成功',failed:'失败'}[call.status] || call.status}</td><td>{money(call.cost_cents)}</td><td>{money(call.reserved_cents)}</td><td>{call.reported_cost_cents === null ? '待确认' : money(call.reported_cost_cents)}</td></tr>)}</tbody></table></div>}
+                {calls.data && (callsPage > 1 || calls.data.has_more) && <div className="pagination"><button className="button" disabled={callsPage === 1} onClick={() => setCallsPage(p => p - 1)}>上一页</button><span>第 {callsPage} 页</span><button className="button" disabled={!calls.data.has_more} onClick={() => setCallsPage(p => p + 1)}>下一页</button></div>}
+              </section></>}
           </> : <Empty title={tab === 'storyboard' ? '角色准备好后，故事将展开成镜头' : '质检从第一张真实关键帧开始'}><p>{tab === 'storyboard' ? '分镜编辑、B 关卡审核和生成任务将在后续批次接入。' : '五维质检、候选帧复核和评估报告将在生成链路接通后启用。'}</p><button className="button" onClick={() => setTab('characters')}>查看角色准备情况</button></Empty>}
         </>}
         <footer className="page-footer">分镜流水线 <span>每一次生成，都有依据。</span></footer>

@@ -1,46 +1,11 @@
 """在专用 MySQL 测试库验证 HTTP、事务和版本竞争，不用 SQLite 替代。"""
 
 import asyncio
-import os
 import uuid
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-
-from app.core.db import get_db
-from app.main import app
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-async def client():
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("使用 python scripts/test_mysql.py 创建专用测试库后运行")
-    assert (make_url(url).database or "").startswith("sbp_test_")
-    engine = create_async_engine(url, poolclass=NullPool)
-    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-
-    async def db_override():
-        async with sessions() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
-
-    app.dependency_overrides[get_db] = db_override
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
-            yield api
-    finally:
-        app.dependency_overrides.clear()
-        await engine.dispose()
 
 
 async def create_project(client, budget=2500):

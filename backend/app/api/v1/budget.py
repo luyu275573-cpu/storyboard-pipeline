@@ -7,18 +7,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.response import ok
-from app.models.tracking import BudgetLedger
+from app.models.tracking import ApiCallLog, BudgetLedger, ProviderRequest
 from app.services.catalog import project_or_404
 from app.services.cost_service import CostService
 
 router = APIRouter()
+
+
+def get_cost_service() -> CostService:
+    return CostService()
 
 
 @router.get("/config", summary="当前预算配置")
@@ -53,13 +57,23 @@ async def get_budget(project_id: str, db: AsyncSession = Depends(get_db)) -> dic
         )
     )
     spent = next((row.spent_cents for row in rows if row.scope == "project" and row.scope_key == "total"), 0)
+    reserved = next(
+        (row.reserved_cents for row in rows if row.scope == "project" and row.scope_key == "total"), 0
+    )
+    disputed = await db.scalar(
+        select(ProviderRequest.id)
+        .where(ProviderRequest.project_id == project_id, ProviderRequest.status == "billing_disputed")
+        .limit(1)
+    )
     return ok(
         {
             "project_id": project.id,
             "budget_cents": project.budget_cents,
             "spent_cents": spent,
-            "remaining_cents": project.budget_cents - spent,
-            "ratio": spent / project.budget_cents if project.budget_cents else 0,
+            "reserved_cents": reserved,
+            "remaining_cents": project.budget_cents - spent - reserved,
+            "ratio": (spent + reserved) / project.budget_cents if project.budget_cents else 0,
+            "billing_disputed": bool(disputed),
             "warn_ratio": settings.budget_warn_ratio,
             "degrade_ratio": settings.budget_degrade_ratio,
             "ledgers": [
@@ -68,6 +82,7 @@ async def get_budget(project_id: str, db: AsyncSession = Depends(get_db)) -> dic
                     "scope_key": r.scope_key,
                     "budget_cents": r.budget_cents,
                     "spent_cents": r.spent_cents,
+                    "reserved_cents": r.reserved_cents,
                 }
                 for r in rows
             ],
@@ -76,23 +91,16 @@ async def get_budget(project_id: str, db: AsyncSession = Depends(get_db)) -> dic
 
 
 @router.get("/{project_id}/shots", summary="单镜头成本明细")
-async def shot_costs(project_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): 调 CostService.report_shot_cost(project_id)。
-
-    返回每个镜头抽了几次卡、花了多少钱、成功几次。
-    用于定位"哪个镜头在烧钱"——通常是锚定有缺陷或分镜描述不可实现的镜头。
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+async def shot_costs(
+    project_id: str, db: AsyncSession = Depends(get_db), cost: CostService = Depends(get_cost_service)
+) -> dict[str, Any]:
+    await project_or_404(db, project_id)
+    return ok(await cost.report_shot_cost(project_id))
 
 
 @router.get("/providers/stats", summary="各供应商成功率与单价对比")
-async def provider_stats(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): 调 CostService.report_provider_stats()。
-
-    路由策略的数据依据：如果某家限流严重，实际可用性低于其单价优势，
-    就应该把它从降级链首位挪走。这个结论必须由实测数据得出，不是拍脑袋。
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+async def provider_stats(cost: CostService = Depends(get_cost_service)) -> dict[str, Any]:
+    return ok(await cost.report_provider_stats())
 
 
 @router.get("/{project_id}/qc-savings", summary="质检拦截带来的成本节省")
@@ -129,17 +137,40 @@ async def call_logs(
     kind: str | None = None,
     provider: str | None = None,
     success: bool | None = None,
-    limit: int = 100,
+    page: int = Query(default=1, ge=1, le=10000),
+    limit: int = Query(default=50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """TODO(impl): 分页查 api_call_logs，支持按 kind/provider/success 过滤。
-
-    排查用：失败的调用也要能看到（含 error_code 与 is_retry），
-    因为限流与超时同样消耗配额，且是判断供应商可用性的依据。
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
-
-
-# CostService 依赖注入，供各路由复用
-def get_cost_service(db: AsyncSession = Depends(get_db)) -> CostService:
-    return CostService(db)
+    await project_or_404(db, project_id)
+    query = select(ApiCallLog).where(ApiCallLog.project_id == project_id)
+    if kind is not None:
+        query = query.where(ApiCallLog.kind == kind)
+    if provider is not None:
+        query = query.where(ApiCallLog.provider == provider)
+    if success is not None:
+        query = query.where(ApiCallLog.success == success, ApiCallLog.status.in_(["succeeded", "failed"]))
+    rows = await db.scalars(query.order_by(ApiCallLog.id.desc()).offset((page - 1) * limit).limit(limit + 1))
+    items = list(rows)
+    fields = (
+        "id",
+        "request_id",
+        "call_no",
+        "kind",
+        "provider",
+        "model",
+        "status",
+        "cost_cents",
+        "reserved_cents",
+        "quoted_cents",
+        "reported_cost_cents",
+        "error_code",
+        "latency_ms",
+        "is_retry",
+    )
+    return ok(
+        {
+            "items": [{key: getattr(row, key) for key in fields} for row in items[:limit]],
+            "page": page,
+            "has_more": len(items) > limit,
+        }
+    )

@@ -34,6 +34,7 @@ def run(*args):
 
 environment = {**os.environ, "DATABASE_URL": url.set(database=database).render_as_string(hide_password=False)}
 environment["TEST_DATABASE_URL"] = environment["DATABASE_URL"]
+environment["TEST_REDIS_URL"] = settings.redis_url
 environment["PYTHONUTF8"] = "1"
 try:
     sql(f"CREATE DATABASE `{database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"

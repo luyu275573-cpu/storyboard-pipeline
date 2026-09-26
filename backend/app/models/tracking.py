@@ -13,6 +13,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -138,6 +139,29 @@ class QCGoldenSet(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class ProviderRequest(Base):
+    """一次逻辑请求。重放跨供应商返回同一结果，未知结果禁止重新提交。"""
+
+    __tablename__ = "provider_requests"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_provider_request_key"),
+        Index("idx_requests_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"))
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("pipeline_runs.id", ondelete="CASCADE"))
+    operation_key: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(20))
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    owner_token: Mapped[str] = mapped_column(String(36))
+    status: Mapped[str] = mapped_column(String(20), default="calling")
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class ApiCallLog(Base):
     """逐次 API 调用记账。失败的调用也要记。
 
@@ -150,9 +174,24 @@ class ApiCallLog(Base):
     __table_args__ = (
         Index("idx_calls_project_time", "project_id", "created_at"),
         Index("idx_calls_provider", "provider", "model", "success"),
+        UniqueConstraint("request_id", "call_no", name="uq_calls_request_no"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    request_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("provider_requests.id", ondelete="CASCADE", name="fk_calls_request"),
+        nullable=True,
+    )
+    call_no: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    status: Mapped[str] = mapped_column(String(20), default="calling", server_default="calling")
+    provider_task_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quoted_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reserved_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reported_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     shot_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -168,16 +207,16 @@ class ApiCallLog(Base):
 
 
 class BudgetLedger(Base):
-    """预算账本。三级预算：项目 / 镜头 / 类型，任一层触顶即熔断。
-
-    花费累加必须用数据库原子条件更新：
-        UPDATE ... SET spent_cents = spent_cents + :cost
-        WHERE ... AND spent_cents + :cost <= budget_cents
-    影响行数为 0 即预算不足。先查后写在并发下会超支。
-    """
+    """三级预算在持有项目行锁的同一事务内预留/结算，禁止无锁先查后写。"""
 
     __tablename__ = "budget_ledger"
-    __table_args__ = (UniqueConstraint("project_id", "scope", "scope_key", name="uq_budget_scope"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "scope", "scope_key", name="uq_budget_scope"),
+        CheckConstraint(
+            "spent_cents >= 0 AND reserved_cents >= 0 AND spent_cents + reserved_cents <= budget_cents",
+            name="ck_budget_available",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(
@@ -187,6 +226,7 @@ class BudgetLedger(Base):
     scope_key: Mapped[str] = mapped_column(String(120))  # 镜头 ID 或 image/video/vision/llm
     budget_cents: Mapped[int] = mapped_column(Integer)
     spent_cents: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 

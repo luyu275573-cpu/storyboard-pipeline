@@ -2,22 +2,25 @@
 
 提供三类能力：
 1. 通用异步客户端
-2. 供应商并发闸门（信号量，带 TTL 自动释放，防 Worker 崩溃后永久占用）
-3. 幂等键（防重试重复扣费）
+2. 供应商并发租约（独立令牌、续租、条件释放）
+3. 进度队列（M4 将替换为广播重放）；付费幂等由 MySQL 负责
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable
-from contextlib import asynccontextmanager
-from typing import cast
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, field
+from typing import TypeVar, cast
 
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.errors import ProviderUncertainError
 
 _pool: redis.Redis | None = None
 
@@ -48,21 +51,83 @@ async def close_redis() -> None:
 KEY_RUN_STATE = "run:{run_id}:state"
 KEY_RUN_PROGRESS = "run:{run_id}:progress"
 KEY_BUDGET_HOT = "budget:hot:{project_id}"
-KEY_IDEMPOTENCY = "idem:{key}"
-KEY_SEMAPHORE = "sem:{provider}"
+KEY_SEMAPHORE = "lease:provider:{provider}"
 KEY_SHOT_LOCK = "lock:shot:{shot_id}"
 
-TTL_IDEMPOTENCY = 86400  # 24h
-TTL_SEMAPHORE = 60  # 秒；必须短，Worker 崩溃后能自动释放
+TTL_SEMAPHORE = 60  # 持有者每 TTL/3 续租
 TTL_SHOT_LOCK = 30
 TTL_RUN_STATE = 7 * 86400
 TTL_PROGRESS = 86400
 
 
-# ==================== 供应商并发闸门 ====================
-#
-# 云 API 免费档并发普遍限制为 1-2，超限应排队而非直接失败。
-# 用 Redis 计数器实现跨进程闸门；TTL 保证崩溃后自动释放。
+# ==================== 供应商并发租约 ====================
+
+# Redis TIME 避免不同 Worker 时钟偏移；每个令牌有独立到期时间。
+_ACQUIRE = """
+local t = redis.call('TIME')
+local now = t[1]*1000 + math.floor(t[2]/1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+redis.call('ZADD', KEYS[1], now + ARGV[3], ARGV[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[3]*2)
+return 1
+"""
+_RENEW = """
+local t = redis.call('TIME')
+local now = t[1]*1000 + math.floor(t[2]/1000)
+local expiry = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if not expiry or tonumber(expiry) <= now then return 0 end
+redis.call('ZADD', KEYS[1], now + ARGV[2], ARGV[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[2]*2)
+return 1
+"""
+_RELEASE = """
+redis.call('ZREM', KEYS[1], ARGV[1])
+if redis.call('ZCARD', KEYS[1]) == 0 then redis.call('DEL', KEYS[1]) end
+return 1
+"""
+T = TypeVar("T")
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProviderLease:
+    key: str
+    token: str
+    ttl_ms: int
+    client: redis.Redis
+    lost: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def renew(self) -> bool:
+        return bool(
+            await cast(Awaitable[int], self.client.eval(_RENEW, 1, self.key, self.token, str(self.ttl_ms)))
+        )
+
+    async def release(self) -> None:
+        await cast(Awaitable[int], self.client.eval(_RELEASE, 1, self.key, self.token))
+
+    async def heartbeat(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self.ttl_ms / 3000)
+                if not await self.renew():
+                    self.lost.set()
+                    return
+        except Exception:
+            self.lost.set()
+
+    async def run(self, work: Awaitable[T]) -> T:
+        task = asyncio.ensure_future(work)
+        lost = asyncio.create_task(self.lost.wait())
+        try:
+            await asyncio.wait([task, lost], return_when=asyncio.FIRST_COMPLETED)
+            if self.lost.is_set():
+                raise ProviderUncertainError("供应商租约失效，需查询原任务结果")
+            return await task
+        finally:
+            task.cancel()
+            lost.cancel()
+            await asyncio.gather(task, lost, return_exceptions=True)
 
 
 @asynccontextmanager
@@ -70,53 +135,36 @@ async def provider_semaphore(
     provider: str,
     max_concurrency: int | None = None,
     wait_timeout_s: float = 120.0,
-) -> AsyncIterator[bool]:
-    """获取供应商并发额度。
-
-    yield True 表示拿到额度；yield False 表示等待超时（调用方应降级或排队，不要硬失败）。
-    """
-    limit = max_concurrency or settings.provider_max_concurrency
-    key = KEY_SEMAPHORE.format(provider=provider)
+    *,
+    lease_ttl_s: float = TTL_SEMAPHORE,
+) -> AsyncIterator[ProviderLease | None]:
+    limit = settings.provider_max_concurrency if max_concurrency is None else max_concurrency
+    if limit < 1 or lease_ttl_s < 0.1 or wait_timeout_s < 0:
+        raise ValueError("并发数、租约时长或等待时长非法")
     r = get_redis()
-    token = uuid.uuid4().hex
-    acquired = False
-
+    lease = ProviderLease(
+        KEY_SEMAPHORE.format(provider=provider), uuid.uuid4().hex, int(lease_ttl_s * 1000), r
+    )
+    deadline = asyncio.get_running_loop().time() + wait_timeout_s
+    while not await cast(
+        Awaitable[int], r.eval(_ACQUIRE, 1, lease.key, lease.token, str(limit), str(lease.ttl_ms))
+    ):
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            yield None
+            return
+        await asyncio.sleep(min(0.1, remaining))
+    heartbeat = asyncio.create_task(lease.heartbeat())
     try:
-        # 简单自旋 + 短 sleep；生产可换 Redis Stream 或 BRPOPLPUSH 做公平排队
-        deadline = asyncio.get_event_loop().time() + wait_timeout_s
-        while asyncio.get_event_loop().time() < deadline:
-            current = await r.incr(key)
-            if current == 1:
-                await r.expire(key, TTL_SEMAPHORE)
-            if current <= limit:
-                acquired = True
-                break
-            await r.decr(key)  # 没抢到，回退计数
-            await asyncio.sleep(0.5)
-
-        yield acquired
+        yield lease
     finally:
-        if acquired:
-            # 释放：计数减一，归零则删键
-            remaining = await r.decr(key)
-            if remaining <= 0:
-                await r.delete(key)
-        _ = token  # 预留：改为带 token 的公平队列时使用
-
-
-# ==================== 幂等 ====================
-
-
-async def acquire_idempotency(key: str, ttl: int = TTL_IDEMPOTENCY) -> bool:
-    """幂等键抢占。返回 True 表示首次执行，False 表示已执行过（应跳过，防重复扣费）。"""
-    r = get_redis()
-    # NX + EX：原子操作，不存在才设置并带过期
-    return bool(await r.set(KEY_IDEMPOTENCY.format(key=key), "1", nx=True, ex=ttl))
-
-
-async def release_idempotency(key: str) -> None:
-    """执行失败时释放幂等键，允许重试（成功时不释放，防止重复扣费）。"""
-    await get_redis().delete(KEY_IDEMPOTENCY.format(key=key))
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
+        try:
+            await lease.release()
+        except Exception:
+            logger.warning("供应商租约释放失败，将自动到期 provider=%s", provider)
 
 
 # ==================== 进度推送（SSE 数据源）====================

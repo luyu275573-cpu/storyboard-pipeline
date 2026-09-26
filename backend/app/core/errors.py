@@ -29,6 +29,8 @@ class ErrorCode(StrEnum):
     PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
     PROVIDER_ALL_FAILED = "PROVIDER_ALL_FAILED"
     PROVIDER_NO_CREDENTIALS = "PROVIDER_NO_CREDENTIALS"
+    PROVIDER_RESULT_UNKNOWN = "PROVIDER_RESULT_UNKNOWN"
+    PROVIDER_REQUEST_PENDING = "PROVIDER_REQUEST_PENDING"
 
     # 质检域
     QC_PARSE_FAILED = "QC_PARSE_FAILED"
@@ -85,6 +87,22 @@ class ProviderRateLimitedError(ProviderError):
 
 class ProviderTimeoutError(ProviderError):
     code = ErrorCode.PROVIDER_TIMEOUT
+
+
+class ProviderRejectedError(ProviderError):
+    """适配器已确认供应商未受理且未计费，才允许降级。"""
+
+
+class ProviderUncertainError(AppError):
+    """可能已受理/计费，保留预留并查询，禁止自动重发。"""
+
+    http_status = 409
+    code = ErrorCode.PROVIDER_RESULT_UNKNOWN
+
+
+class ProviderPendingError(AppError):
+    http_status = 409
+    code = ErrorCode.PROVIDER_REQUEST_PENDING
 
 
 class AllProvidersFailedError(AppError):

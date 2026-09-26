@@ -10,9 +10,15 @@ export type Character = Record<FeatureKey, Record<string, string>> & {
 export type Run = { id: string; status: string; current_stage: string }
 export type Gate = { id: string; reviewer: string; decided_at: string; snapshot: Character }
 export type Budget = {
-  budget_cents: number; spent_cents: number; remaining_cents: number; ratio: number;
-  ledgers: { scope: string; scope_key: string; budget_cents: number; spent_cents: number }[]
+  budget_cents: number; spent_cents: number; reserved_cents: number; remaining_cents: number; ratio: number;
+  billing_disputed: boolean;
+  ledgers: { scope: string; scope_key: string; budget_cents: number; spent_cents: number; reserved_cents: number }[]
 }
+export type CallPage = { items: {
+  id: number; request_id: string; call_no: number; kind: string; provider: string; model: string;
+  status: string; cost_cents: number; reserved_cents: number; reported_cost_cents: number | null;
+  error_code: string | null;
+}[]; page: number; has_more: boolean }
 export type Page = { items: Project[]; total: number }
 export type Preview = { anchor_prompt: string; negative_prompt: string; subjective_word_hits: string[] }
 

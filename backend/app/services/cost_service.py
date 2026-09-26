@@ -1,248 +1,311 @@
-"""成本记账与预算熔断服务。
-
-两条铁律：
-1. 花费累加用数据库原子条件更新，不是先查后写（并发下会超支）
-2. 失败的调用也要记账（success=0），因为失败同样消耗限流配额，
-   且供应商成功率对比是路由策略的依据
-
-这里是简历上所有量化指标的唯一数据来源，必须第一周打通。
-"""
+"""短事务预算预留、逐次调用记录与持久化重放。外部请求绝不占着数据库事务。"""
 
 from __future__ import annotations
 
-import logging
-from typing import cast
+import hashlib
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import text
-from sqlalchemy.engine import CursorResult
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
-from app.core.errors import BudgetExceededError
-from app.core.redis_client import KEY_BUDGET_HOT, get_redis
-from app.models.enums import BudgetScope
+from app.core.db import SessionLocal
+from app.core.errors import (
+    AppError,
+    BudgetExceededError,
+    ConflictError,
+    NotFoundError,
+    ProviderPendingError,
+    ProviderUncertainError,
+)
+from app.models import load_all_models
+from app.models.domain import PipelineRun, Project, Scene, Shot
+from app.models.tracking import ApiCallLog, BudgetLedger, ProviderRequest, RenderAttempt
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from app.providers.base import CallContext
+
+load_all_models()
+TERMINAL = {"succeeded", "failed"}
+
+
+def cents(value: int) -> int:
+    if type(value) is not int or not 0 <= value <= 2_147_483_647:
+        raise AppError("金额必须是非负整数分")
+    return value
 
 
 class CostService:
-    def __init__(self, db: AsyncSession) -> None:
-        self.db = db
+    def __init__(self, sessions: async_sessionmaker[AsyncSession] = SessionLocal) -> None:
+        self.sessions = sessions
 
-    # ==================== 预算检查 ====================
+    async def lookup(self, key: str, request_hash: str) -> ProviderRequest | None:
+        async with self.sessions() as db:
+            request = await db.scalar(select(ProviderRequest).where(ProviderRequest.idempotency_key == key))
+            if request and request.request_hash != request_hash:
+                raise ConflictError("同一操作标识的请求内容发生变化，请使用新的操作标识")
+            return request
 
-    async def precheck(self, project_id: str, estimated_cents: int) -> None:
-        """调用前预检。不足则抛 BudgetExceededError，由上层降级或挂起。
-
-        先用 Redis 热计数快速拒绝（省一次 DB 往返），DB 是最终账本。
-        """
-        if estimated_cents <= 0:
-            return
-
-        r = get_redis()
-        hot_key = KEY_BUDGET_HOT.format(project_id=project_id)
-        hot = await r.get(hot_key)
-        if hot is not None and int(hot) + estimated_cents > settings.budget_total_cents:
-            await self._emit_budget_event(project_id, int(hot), estimated_cents)
-            msg = f"预算不足：已用 {int(hot) / 100:.2f} 元，本次需 {estimated_cents / 100:.2f} 元"
-            raise BudgetExceededError(msg, detail={"spent_cents": int(hot), "need_cents": estimated_cents})
-
-        spent = await self._get_project_spent(project_id)
-        if spent + estimated_cents > settings.budget_total_cents:
-            await self._emit_budget_event(project_id, spent, estimated_cents)
-            msg = f"预算不足：已用 {spent / 100:.2f} 元，本次需 {estimated_cents / 100:.2f} 元"
-            raise BudgetExceededError(msg, detail={"spent_cents": spent, "need_cents": estimated_cents})
-
-        # 预警与降级提示
-        ratio = (spent + estimated_cents) / max(settings.budget_total_cents, 1)
-        if ratio >= settings.budget_degrade_ratio:
-            logger.warning("预算达 %.0f%%，应降级到最低成本策略 project=%s", ratio * 100, project_id)
-        elif ratio >= settings.budget_warn_ratio:
-            logger.warning("预算达 %.0f%% project=%s", ratio * 100, project_id)
-
-    async def _get_project_spent(self, project_id: str) -> int:
-        row = await self.db.execute(
-            text(
-                "SELECT COALESCE(SUM(spent_cents), 0) FROM budget_ledger "
-                "WHERE project_id = :pid AND scope = :scope AND scope_key = 'total'"
-            ),
-            {"pid": project_id, "scope": BudgetScope.PROJECT.value},
-        )
-        return int(row.scalar() or 0)
-
-    # ==================== 花费记账 ====================
-
-    async def charge(
-        self,
-        project_id: str,
-        cost_cents: int,
-        *,
-        scope_key: str = "total",
-        shot_id: str | None = None,
-        kind: str | None = None,
-    ) -> bool:
-        """原子扣费。返回 True 表示扣费成功，False 表示预算不足（调用方须放弃本次结果）。
-
-        关键：靠 SQL 条件 `spent + cost <= budget` 保证并发下不超支，
-        而不是先 SELECT 再 UPDATE——后者两个 Worker 可能同时读到"还有余额"。
-        """
-        if cost_cents <= 0:
-            return True
-
-        targets: list[tuple[str, str, int]] = [
-            (BudgetScope.PROJECT.value, "total", settings.budget_total_cents)
-        ]
-        if shot_id:
-            targets.append((BudgetScope.SHOT.value, shot_id, settings.budget_per_shot_cents))
-        if kind:
-            targets.append((BudgetScope.KIND.value, kind, settings.budget_total_cents))
-
-        # 任一层预算不足即拒绝，不部分扣费
-        for scope, key, budget in targets:
-            await self._ensure_ledger_row(project_id, scope, key, budget)
-            result = await self.db.execute(
-                text(
-                    "UPDATE budget_ledger SET spent_cents = spent_cents + :cost "
-                    "WHERE project_id = :pid AND scope = :scope AND scope_key = :key "
-                    "AND spent_cents + :cost <= budget_cents"
-                ),
-                {"cost": cost_cents, "pid": project_id, "scope": scope, "key": key},
+    async def get_request(self, request_id: str) -> tuple[ProviderRequest, ApiCallLog]:
+        async with self.sessions() as db:
+            request = await db.get(ProviderRequest, request_id)
+            if request is None:
+                raise NotFoundError("模型请求不存在")
+            call = await db.scalar(
+                select(ApiCallLog)
+                .where(ApiCallLog.request_id == request.id)
+                .order_by(ApiCallLog.call_no.desc())
+                .limit(1)
             )
-            if cast(CursorResult, result).rowcount == 0:
-                logger.warning(
-                    "预算熔断 scope=%s key=%s cost=%s project=%s", scope, key, cost_cents, project_id
+            assert call is not None
+            return request, call
+
+    async def _project(self, db: AsyncSession, project_id: str) -> Project:
+        # ponytail: 本机吞吐下按项目串行化预算事务；吞吐成为瓶颈时再细化账本锁。
+        project = await db.scalar(select(Project).where(Project.id == project_id).with_for_update())
+        if project is None:
+            raise NotFoundError("项目不存在")
+        return project
+
+    async def _ledgers(
+        self, db: AsyncSession, project: Project, kind: str, shot_id: str | None
+    ) -> list[BudgetLedger]:
+        targets = [("project", "total", project.budget_cents), ("kind", kind, project.budget_cents)]
+        if shot_id:
+            targets.append(("shot", shot_id, min(project.budget_cents, settings.budget_per_shot_cents)))
+        rows = []
+        for scope, key, limit in targets:
+            row = await db.scalar(
+                select(BudgetLedger)
+                .where(
+                    BudgetLedger.project_id == project.id,
+                    BudgetLedger.scope == scope,
+                    BudgetLedger.scope_key == key,
                 )
-                return False
+                .with_for_update()
+            )
+            if row is None:
+                row = BudgetLedger(
+                    project_id=project.id,
+                    scope=scope,
+                    scope_key=key,
+                    budget_cents=limit,
+                    spent_cents=0,
+                    reserved_cents=0,
+                )
+                db.add(row)
+            rows.append(row)
+        return rows
 
-        # 同步 Redis 热计数（允许短暂不一致，DB 为准）
-        try:
-            r = get_redis()
-            await r.incrby(KEY_BUDGET_HOT.format(project_id=project_id), cost_cents)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis 热计数更新失败（不影响账本）: %s", exc)
-
-        return True
-
-    async def _ensure_ledger_row(
-        self, project_id: str, scope: str, scope_key: str, budget_cents: int
-    ) -> None:
-        await self.db.execute(
-            text(
-                "INSERT IGNORE INTO budget_ledger "
-                "(id, project_id, scope, scope_key, budget_cents, spent_cents) "
-                "VALUES (UUID(), :pid, :scope, :key, :budget, 0)"
-            ),
-            {"pid": project_id, "scope": scope, "key": scope_key, "budget": budget_cents},
-        )
-
-    # ==================== 调用日志 ====================
-
-    async def log_call(
+    async def begin_call(
         self,
+        ctx: CallContext,
         *,
-        kind: str,
+        key: str,
+        request_hash: str,
+        owner: str,
         provider: str,
         model: str,
-        success: bool,
-        cost_cents: int = 0,
-        latency_ms: int | None = None,
-        error_code: str | None = None,
-        is_retry: bool = False,
-        project_id: str | None = None,
-        shot_id: str | None = None,
-        attempt_id: str | None = None,
-    ) -> None:
-        """逐次调用记账。失败的调用也要记。"""
-        await self.db.execute(
-            text(
-                "INSERT INTO api_call_logs "
-                "(project_id, shot_id, attempt_id, kind, provider, model, success, "
-                " cost_cents, latency_ms, error_code, is_retry) "
-                "VALUES (:pid, :sid, :aid, :kind, :provider, :model, :success, "
-                " :cost, :latency, :err, :retry)"
-            ),
-            {
-                "pid": project_id,
-                "sid": shot_id,
-                "aid": attempt_id,
-                "kind": kind,
-                "provider": provider,
-                "model": model,
-                "success": success,
-                "cost": cost_cents,
-                "latency": latency_ms,
-                "err": error_code,
-                "retry": is_retry,
-            },
-        )
+        quoted_cents: int,
+    ) -> tuple[ProviderRequest, ApiCallLog | None]:
+        quoted = cents(quoted_cents)
+        async with self.sessions.begin() as db:
+            project = await self._project(db, ctx.project_id)
+            request = await db.scalar(
+                select(ProviderRequest).where(ProviderRequest.idempotency_key == key).with_for_update()
+            )
+            if request:
+                if request.request_hash != request_hash:
+                    raise ConflictError("同一操作标识的请求内容发生变化")
+                if request.status in TERMINAL:
+                    return request, None
+                if request.owner_token != owner or request.status != "routing":
+                    raise ProviderPendingError(
+                        "请求尚未结束，请查询原请求", detail={"request_id": request.id}
+                    )
+            run = await db.scalar(select(PipelineRun).where(PipelineRun.id == ctx.run_id).with_for_update())
+            if run is None or run.project_id != project.id:
+                raise AppError("运行不属于该项目")
+            if ctx.shot_id:
+                shot_project = await db.scalar(
+                    select(Scene.project_id).join(Shot).where(Shot.id == ctx.shot_id)
+                )
+                if shot_project != project.id:
+                    raise AppError("镜头不属于该项目")
+            if ctx.attempt_id:
+                attempt = await db.get(RenderAttempt, ctx.attempt_id)
+                if not ctx.shot_id or attempt is None or attempt.shot_id != ctx.shot_id:
+                    raise AppError("抽卡记录不属于该镜头")
+            disputed = await db.scalar(
+                select(ProviderRequest.id)
+                .where(ProviderRequest.project_id == project.id, ProviderRequest.status == "billing_disputed")
+                .with_for_update()
+                .limit(1)
+            )
+            if disputed:
+                raise ProviderUncertainError(
+                    "该项目有超出报价的账单，需先核实", detail={"request_id": disputed}
+                )
+            ledgers = await self._ledgers(db, project, ctx.kind.value, ctx.shot_id)
+            for row in ledgers:
+                if row.spent_cents + row.reserved_cents + quoted > row.budget_cents:
+                    raise BudgetExceededError(
+                        "预算可用额度不足，调用未发送",
+                        detail={
+                            "scope": row.scope,
+                            "scope_key": row.scope_key,
+                            "need_cents": quoted,
+                            "available_cents": row.budget_cents - row.spent_cents - row.reserved_cents,
+                        },
+                    )
+            for row in ledgers:
+                row.reserved_cents += quoted
+            if request is None:
+                request = ProviderRequest(
+                    project_id=project.id,
+                    run_id=ctx.run_id,
+                    operation_key=ctx.operation_key,
+                    kind=ctx.kind.value,
+                    idempotency_key=key,
+                    request_hash=request_hash,
+                    owner_token=owner,
+                    status="calling",
+                )
+                db.add(request)
+                await db.flush()
+            request.status = "calling"
+            previous = await db.scalar(
+                select(func.max(ApiCallLog.call_no)).where(ApiCallLog.request_id == request.id)
+            )
+            number = (previous or 0) + 1
+            call = ApiCallLog(
+                request_id=request.id,
+                call_no=number,
+                project_id=project.id,
+                shot_id=ctx.shot_id,
+                attempt_id=ctx.attempt_id,
+                kind=ctx.kind.value,
+                provider=provider,
+                model=model,
+                success=False,
+                cost_cents=0,
+                status="calling",
+                quoted_cents=quoted,
+                reserved_cents=quoted,
+                is_retry=number > 1,
+                idempotency_key=hashlib.sha256(f"{request.id}:{number}".encode()).hexdigest(),
+            )
+            db.add(call)
+            await db.flush()
+            return request, call
 
-    # ==================== 报表（简历指标数据源）====================
+    async def _locked_call(
+        self, db: AsyncSession, call_id: int
+    ) -> tuple[Project, ProviderRequest, ApiCallLog]:
+        project_id = await db.scalar(select(ApiCallLog.project_id).where(ApiCallLog.id == call_id))
+        if project_id is None:
+            raise NotFoundError("调用记录不存在")
+        project = await self._project(db, project_id)
+        call = await db.scalar(select(ApiCallLog).where(ApiCallLog.id == call_id).with_for_update())
+        assert call is not None and call.request_id is not None
+        request = await db.scalar(
+            select(ProviderRequest).where(ProviderRequest.id == call.request_id).with_for_update()
+        )
+        assert request is not None
+        return project, request, call
+
+    async def attach_task(self, call_id: int, task_id: str) -> None:
+        """适配器收到任务号后立刻持久化，再开始轮询或下载。"""
+        if not task_id.strip() or len(task_id) > 200:
+            raise AppError("供应商任务号非法")
+        async with self.sessions.begin() as db:
+            _, _, call = await self._locked_call(db, call_id)
+            if call.provider_task_id not in (None, task_id):
+                raise ConflictError("调用已绑定另一个供应商任务")
+            call.provider_task_id = task_id
+
+    async def mark_unknown(self, call_id: int, error_code: str) -> None:
+        async with self.sessions.begin() as db:
+            _, request, call = await self._locked_call(db, call_id)
+            if call.status in TERMINAL or request.status == "billing_disputed":
+                return
+            call.status = "unknown"
+            call.error_code = error_code[:60]
+            request.status = "unknown"
+
+    async def finish(self, call_id: int, result: dict, *, allow_fallback: bool = False) -> ProviderRequest:
+        actual = cents(result["cost_cents"])
+        async with self.sessions.begin() as db:
+            project, request, call = await self._locked_call(db, call_id)
+            if call.status in TERMINAL:
+                return request
+            call.reported_cost_cents = actual
+            call.response = result
+            if actual > call.quoted_cents:
+                # 不把实际账单伪装成零，也不擅自突破用户预算。冻结项目待核实。
+                call.status = "unknown"
+                call.error_code = "BUDGET_QUOTE_MISMATCH"
+                request.status = "billing_disputed"
+                return request
+            if request.status == "billing_disputed":
+                raise ConflictError("报价争议需人工核实，不能用后续较低报价自动覆盖")
+            for row in await self._ledgers(db, project, call.kind, call.shot_id):
+                row.reserved_cents -= call.reserved_cents
+                row.spent_cents += actual
+            run = await db.scalar(
+                select(PipelineRun).where(PipelineRun.id == request.run_id).with_for_update()
+            )
+            assert run is not None
+            run.spent_cents += actual
+            call.reserved_cents = 0
+            call.cost_cents = actual
+            call.success = result["success"]
+            call.status = "succeeded" if call.success else "failed"
+            call.latency_ms = result["latency_ms"]
+            call.error_code = result["error_code"]
+            call.finished_at = datetime.now(UTC).replace(tzinfo=None)
+            request.status = "succeeded" if call.success else ("routing" if allow_fallback else "failed")
+            request.result = result
+            return request
+
+    async def finish_routing(self, key: str, owner: str) -> None:
+        async with self.sessions.begin() as db:
+            project_id = await db.scalar(
+                select(ProviderRequest.project_id).where(ProviderRequest.idempotency_key == key)
+            )
+            if project_id is None:
+                return
+            await self._project(db, project_id)
+            request = await db.scalar(
+                select(ProviderRequest).where(ProviderRequest.idempotency_key == key).with_for_update()
+            )
+            assert request is not None
+            if request.owner_token == owner and request.status == "routing":
+                request.status = "failed"
 
     async def report_shot_cost(self, project_id: str) -> list[dict]:
-        """单镜头成本与抽卡次数。"""
-        rows = await self.db.execute(
-            text(
-                "SELECT shot_id, COUNT(*) AS attempts, SUM(cost_cents) AS cost_cents, "
-                "SUM(success) AS ok_count "
-                "FROM api_call_logs WHERE project_id = :pid AND shot_id IS NOT NULL "
-                "GROUP BY shot_id ORDER BY cost_cents DESC"
-            ),
-            {"pid": project_id},
-        )
-        return [dict(r._mapping) for r in rows]  # noqa: SLF001
+        async with self.sessions() as db:
+            rows = await db.execute(
+                text(
+                    "SELECT shot_id, COUNT(*) AS attempts, SUM(cost_cents) AS cost_cents, "
+                    "SUM(reserved_cents) AS reserved_cents, SUM(success) AS ok_count "
+                    "FROM api_call_logs WHERE project_id = :pid AND shot_id IS NOT NULL "
+                    "GROUP BY shot_id ORDER BY cost_cents DESC"
+                ),
+                {"pid": project_id},
+            )
+            return [dict(row._mapping) for row in rows]
 
     async def report_provider_stats(self) -> list[dict]:
-        """各供应商成功率与单价对比——路由策略的数据依据。"""
-        rows = await self.db.execute(
-            text(
-                "SELECT provider, model, COUNT(*) AS calls, "
-                "AVG(success) AS success_rate, "
-                "AVG(CASE WHEN success = 1 THEN cost_cents END) AS avg_cost_cents, "
-                "AVG(latency_ms) AS avg_latency_ms "
-                "FROM api_call_logs GROUP BY provider, model ORDER BY calls DESC"
+        async with self.sessions() as db:
+            rows = await db.execute(
+                text(
+                    "SELECT provider, kind, model, COUNT(*) AS calls, "
+                    "SUM(status IN ('calling', 'unknown')) AS pending_calls, "
+                    "AVG(CASE WHEN status IN ('succeeded','failed') THEN success END) AS success_rate, "
+                    "AVG(CASE WHEN success = 1 THEN cost_cents END) AS avg_cost_cents "
+                    "FROM api_call_logs GROUP BY provider, kind, model ORDER BY calls DESC"
+                )
             )
-        )
-        return [dict(r._mapping) for r in rows]  # noqa: SLF001
-
-    async def report_qc_savings(self, project_id: str, video_unit_cents: int = 140) -> dict:
-        """质检拦截的无效重抽 = 省下的钱。
-
-        逻辑：质检在图像层拦住一张废片，就等于省下它流到视频层的成本。
-        这是"质检放图像层"这个架构决策的直接经济价值。
-        """
-        row = await self.db.execute(
-            text(
-                "SELECT COUNT(*) AS blocked FROM qc_reports q "
-                "JOIN render_attempts a ON a.id = q.attempt_id "
-                "JOIN shots s ON s.id = a.shot_id "
-                "JOIN scenes sc ON sc.id = s.scene_id "
-                "WHERE sc.project_id = :pid AND q.verdict IN ('reject', 'blocked')"
-            ),
-            {"pid": project_id},
-        )
-        blocked = int(row.scalar() or 0)
-        return {
-            "blocked_attempts": blocked,
-            "saved_cents": blocked * video_unit_cents,
-            "video_unit_cents": video_unit_cents,
-        }
-
-    # ==================== 内部 ====================
-
-    async def _emit_budget_event(self, project_id: str, spent: int, need: int) -> None:
-        """预算事件推给前端（SSE），不要等到 100% 才发现。"""
-        try:
-            from app.core.redis_client import publish_progress
-
-            await publish_progress(
-                project_id,
-                "budget",
-                {
-                    "spent_cents": spent,
-                    "need_cents": need,
-                    "budget_cents": settings.budget_total_cents,
-                    "ratio": round(spent / max(settings.budget_total_cents, 1), 3),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("预算事件推送失败: %s", exc)
+            return [dict(row._mapping) for row in rows]

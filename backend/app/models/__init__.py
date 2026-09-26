@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         ApiCallLog,
         BudgetLedger,
         Export,
+        ProviderRequest,
         QCGoldenSet,
         QCReport,
         RenderAttempt,
@@ -55,6 +56,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ApiCallLog": ("app.models.tracking", "ApiCallLog"),
     "BudgetLedger": ("app.models.tracking", "BudgetLedger"),
     "Export": ("app.models.tracking", "Export"),
+    "ProviderRequest": ("app.models.tracking", "ProviderRequest"),
 }
 
 
@@ -90,6 +92,7 @@ __all__ = [
     "Export",
     "PipelineRun",
     "Project",
+    "ProviderRequest",
     "QCGoldenSet",
     "QCReport",
     "RenderAttempt",
