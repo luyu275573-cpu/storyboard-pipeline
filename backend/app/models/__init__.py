@@ -19,8 +19,6 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import DeclarativeBase
-
     from app.models.domain import (
         Character,
         CharacterRef,

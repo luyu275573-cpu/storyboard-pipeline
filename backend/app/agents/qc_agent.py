@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -122,7 +123,7 @@ def build_qc_user_prompt(
     注入角色锚定（含版本号，便于 Trace 归因）+ 分镜要求 + 是否附带基准帧。
     """
     parts = [
-        "## 角色特征库（锚定版本 v%d）" % anchor_version,
+        f"## 角色特征库（锚定版本 v{anchor_version}）",
         anchor_prompt or "（未提供角色特征）",
         "",
         "## 本镜头分镜要求",
@@ -222,11 +223,11 @@ class QCAgent:
         failed_dims: list[str] = []
 
         for dim in DIMENSIONS:
-            entry = dims_raw.get(dim) or {}
+            entry = dims_raw.get(dim)
             if not isinstance(entry, dict):
                 msg = f"维度 {dim} 格式非法"
                 raise QCParseError(msg)
-            score = _to_float(entry.get("score", 0.0))
+            score = _to_float(entry.get("score"))
             # 本地重判：不信任模型自报的 ok
             ok = score < DIMENSION_THRESHOLD
             note = str(entry.get("note") or "")
@@ -241,7 +242,7 @@ class QCAgent:
             if not ok:
                 failed_dims.append(dim)
 
-        confidence = _to_float(raw.get("confidence", 0.0))
+        confidence = _to_float(raw.get("confidence"))
         model_verdict = str(raw.get("verdict") or "").strip().lower()
         reasoning = str(raw.get("reasoning") or "")
 
@@ -313,10 +314,12 @@ class QCAgent:
 
 
 def _to_float(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise QCParseError("质检分数和置信度必须为 0 到 1 的有限数值")
+    score = float(value)
+    if not math.isfinite(score) or not 0 <= score <= 1:
+        raise QCParseError("质检分数和置信度超出有效范围")
+    return score
 
 
 def _extract_json(text: str) -> dict[str, Any]:

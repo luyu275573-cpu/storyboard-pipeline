@@ -50,7 +50,7 @@ class AttemptStatus(StrEnum):
 class QCVerdict(StrEnum):
     """质检判定结论。"""
 
-    PASS = "pass"  # 合格，进人工终审
+    PASS = "pass"  # noqa: S105 -- 质检状态，不是口令
     REPAIRABLE = "repairable"  # 可自动修复
     REJECT = "reject"  # 不合格，重抽计数 +1
     BLOCKED = "blocked"  # 合规拦截，禁止自动重试
@@ -85,7 +85,7 @@ class QCDimension(StrEnum):
 class GoldenLabel(StrEnum):
     """黄金测试集人工标注标签。"""
 
-    PASS = "pass"
+    PASS = "pass"  # noqa: S105 -- 标注状态，不是口令
     FACIAL_DEFORMITY = "facial_deformity"
     IDENTITY_DRIFT = "identity_drift"
     COLOR_DISCONTINUITY = "color_discontinuity"

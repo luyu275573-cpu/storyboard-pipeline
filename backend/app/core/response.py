@@ -9,6 +9,7 @@ import logging
 from typing import Any, Generic, TypeVar
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -61,7 +62,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
         # Pydantic 校验失败：返回字段级错误，前端可直接定位
-        return fail(ErrorCode.BAD_REQUEST, "请求参数校验失败", {"errors": exc.errors()}, 422)
+        errors = [{k: v for k, v in error.items() if k not in {"ctx", "input"}} for error in exc.errors()]
+        return fail(ErrorCode.BAD_REQUEST, "请求参数校验失败", {"errors": jsonable_encoder(errors)}, 422)
 
     @app.exception_handler(Exception)
     async def _unhandled_handler(_: Request, exc: Exception) -> JSONResponse:

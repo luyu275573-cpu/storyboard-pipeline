@@ -10,12 +10,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
+from typing import cast
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from app.core.redis_client import consume_progress, get_redis, KEY_RUN_PROGRESS
+from app.core.redis_client import KEY_RUN_PROGRESS, consume_progress, get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,10 @@ async def _event_stream(run_id: str, until_done: bool) -> AsyncIterator[str]:
     """事件生成器：从 Redis List 阻塞读取进度事件并转发。"""
     r = get_redis()
     pkey = KEY_RUN_PROGRESS.format(run_id=run_id)
-    stream_key = f"{pkey}:events"
 
     # 连接建立即发一次当前快照，前端不必等下一个事件才知道状态
     try:
-        snapshot = await r.hgetall(pkey)
+        snapshot = await cast(Awaitable[dict[str, str]], r.hgetall(pkey))
         if snapshot:
             yield _sse({"run_id": run_id, "snapshot": snapshot}, event="snapshot")
     except Exception as exc:  # noqa: BLE001
@@ -70,7 +70,7 @@ async def _event_stream(run_id: str, until_done: bool) -> AsyncIterator[str]:
                 yield ": heartbeat\n\n"
 
             # 终态判定：run 结束则收尾退出
-            state = await r.hget(pkey, "__status__")
+            state = await cast(Awaitable[str | None], r.hget(pkey, "__status__"))
             if state in ("completed", "failed", "canceled", "suspended"):
                 yield _sse({"run_id": run_id, "status": state}, event="done")
                 if until_done:
@@ -114,7 +114,7 @@ async def progress_snapshot(run_id: str) -> dict:
     """
     r = get_redis()
     pkey = KEY_RUN_PROGRESS.format(run_id=run_id)
-    data = await r.hgetall(pkey)
+    data = await cast(Awaitable[dict[str, str]], r.hgetall(pkey))
     return {
         "code": "OK",
         "message": "success",

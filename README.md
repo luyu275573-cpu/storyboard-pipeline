@@ -2,6 +2,36 @@
 
 本机环境准备、验证结果与开工前契约核对见 [开发准备记录](docs/开发准备.md)（2026-09-24）。
 
+## 当前可运行版本（2026-09-26）
+
+已实现项目创建/分页/搜索、角色建档/版本编辑/锚定预览、带版本与运行校验的 A 关卡、审核记录和预算读取。
+前端保留深色工作台风格。模型生成、B/C 关卡、参考图上传和视频仍按批次推进；界面明确标记尚未启用的功能。
+
+- 最新页面规范：[09-页面设计规格](docs/09-页面设计规格.md)。
+- 冲突约定以 [10-实施修订与任务](docs/10-实施修订与任务.md) 为准。
+- 本批功能与实测结果：[M1 开发验收记录](docs/M1-开发验收记录.md)。
+- 当前远程：`https://github.com/luyu275573-cpu/storyboard-pipeline.git`。
+
+已安装依赖的本机，在 PowerShell 执行 `./start.ps1`，随后访问 http://127.0.0.1:5173 。
+脚本启动开发容器、应用迁移、启动 API 和前端；`./stop.ps1` 仅停止本项目记录的 API/前端进程，保留容器和数据。
+首次安装前端依赖：`cd frontend` 后运行 `npm ci`；后端安装沿用下方 requirements 说明。
+
+质量检查：
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m ruff check app tests
+.\.venv\Scripts\python.exe -m mypy app
+.\.venv\Scripts\python.exe scripts/test_mysql.py
+cd ../frontend
+npm run lint
+npm run build
+```
+
+`test_mysql.py` 仅针对本机开发容器，创建随机的专用测试库，执行全部测试与迁移升降级后删除该测试库。
+直接运行 `pytest` 会跳过需要 `TEST_DATABASE_URL` 的集成测试。当前本机单用户版本仅绑定 loopback。
+下方为原始整体规划，未勾选/待实现能力不代表当前版本已经完成。
+
 AI 漫剧**生产流水线的工程与质量控制层**。
 
 不做一个"输入剧本、输出视频"的生成工具（那是即梦、可灵、纳米漫剧流水线的赛道），
@@ -143,7 +173,9 @@ uvicorn app.main:app --reload --port 8100
 
 ---
 
-## 六、当前状态（2026-09-24 实测）
+## 六、原脚手架记录（2026-09-24）
+
+以下为历史基线。当前交付范围与检查结果见上方 M1 记录；预算预留、持久幂等、租约和 SSE 广播仍待后续验收，不能据此认定完整生成链路可用。
 
 **脚手架已完成并通过测试**，纯逻辑部分不是纸上契约：
 
@@ -166,7 +198,7 @@ python -m pytest tests/test_anchor.py tests/test_qc_agent.py -q
 **交接给 AI 编码助手前请先读 [`docs/08-Codex实施契约.md`](docs/08-Codex实施契约.md)**——
 里面列明哪些模块不要重写、待实现清单的优先级、必须遵守的硬约束与验收标准。
 
-下一步第一动作：`pip install -r requirements.txt`（本机缺 fastapi / redis / arq / asyncmy / pydantic_settings）。
+当时的下一步是安装后端依赖；本机依赖现已安装，日常启动使用根目录 `start.ps1`。
 
 > 依赖缺失时纯逻辑测试仍能通过，这是 `app/models/__init__.py` 采用惰性导出（PEP 562）的目的：
 > 领域逻辑不被数据库与 Web 框架依赖绑架。该设计不要退回急切导入。

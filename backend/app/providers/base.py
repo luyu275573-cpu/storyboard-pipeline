@@ -216,7 +216,7 @@ class BaseProvider(ABC):
 
     async def _log_failure(self, ctx: CallContext, exc: Exception) -> None:
         error_code = getattr(exc, "code", None)
-        error_code = error_code.value if hasattr(error_code, "value") else (error_code or "PROVIDER_ERROR")
+        error_code = getattr(error_code, "value", error_code) or "PROVIDER_ERROR"
         await self.cost.log_call(
             kind=self.kind.value,
             provider=self.name,

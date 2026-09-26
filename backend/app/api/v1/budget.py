@@ -8,29 +8,71 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.response import ok
+from app.models.tracking import BudgetLedger
+from app.services.catalog import project_or_404
 from app.services.cost_service import CostService
 
 router = APIRouter()
 
 
+@router.get("/config", summary="当前预算配置")
+async def budget_config() -> dict[str, Any]:
+    """只读返回生效的预算配置，便于部署后核对是否忘了改回真实值。
+
+    已实现：这是纯配置读取，无副作用。
+    """
+    return {
+        "budget_total_yuan": round(settings.budget_total_cents / 100, 2),
+        "budget_per_shot_yuan": round(settings.budget_per_shot_cents / 100, 2),
+        "warn_ratio": settings.budget_warn_ratio,
+        "degrade_ratio": settings.budget_degrade_ratio,
+        "shot_max_retry": settings.shot_max_retry,
+        "render_n_per_shot": settings.render_n_per_shot,
+        "image_chain": settings.image_chain,
+        "video_chain": settings.video_chain,
+        "provider_max_concurrency": settings.provider_max_concurrency,
+        # 提醒：测试时调小预算后上线忘记恢复，会导致几分钟内触发熔断停掉所有生成
+        "warning": "上线前确认 budget_total 为真实值，且 provider_max_concurrency 不超过供应商免费档配额",
+    }
+
+
 @router.get("/{project_id}", summary="预算使用情况")
 async def get_budget(project_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """返回三级预算的当前用量与熔断阈值。
-
-    TODO(impl):
-      1. 读 budget_ledger 的 project/total 行
-      2. remaining = budget - spent，ratio = spent / budget
-      3. 附带 warn_ratio / degrade_ratio / per_shot_cents / shot_max_retry
-      4. 返回 BudgetOut
-
-    前端应轮询或订阅此接口，在达 70% 时提示、90% 时自动降级。
-    不要等到 100% 才发现钱烧完了。
-    """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    project = await project_or_404(db, project_id)
+    rows = list(
+        await db.scalars(
+            select(BudgetLedger)
+            .where(BudgetLedger.project_id == project_id)
+            .order_by(BudgetLedger.scope, BudgetLedger.scope_key)
+        )
+    )
+    spent = next((row.spent_cents for row in rows if row.scope == "project" and row.scope_key == "total"), 0)
+    return ok(
+        {
+            "project_id": project.id,
+            "budget_cents": project.budget_cents,
+            "spent_cents": spent,
+            "remaining_cents": project.budget_cents - spent,
+            "ratio": spent / project.budget_cents if project.budget_cents else 0,
+            "warn_ratio": settings.budget_warn_ratio,
+            "degrade_ratio": settings.budget_degrade_ratio,
+            "ledgers": [
+                {
+                    "scope": r.scope,
+                    "scope_key": r.scope_key,
+                    "budget_cents": r.budget_cents,
+                    "spent_cents": r.spent_cents,
+                }
+                for r in rows
+            ],
+        }
+    )
 
 
 @router.get("/{project_id}/shots", summary="单镜头成本明细")
@@ -79,27 +121,6 @@ async def full_report(project_id: str, db: AsyncSession = Depends(get_db)) -> di
     花费单位统一用「分」存储、展示时转元并保留两位，避免浮点误差累积。
     """
     raise NotImplementedError("TODO(impl): 由 Codex 实现")
-
-
-@router.get("/config", summary="当前预算配置")
-async def budget_config() -> dict[str, Any]:
-    """只读返回生效的预算配置，便于部署后核对是否忘了改回真实值。
-
-    已实现：这是纯配置读取，无副作用。
-    """
-    return {
-        "budget_total_yuan": round(settings.budget_total_cents / 100, 2),
-        "budget_per_shot_yuan": round(settings.budget_per_shot_cents / 100, 2),
-        "warn_ratio": settings.budget_warn_ratio,
-        "degrade_ratio": settings.budget_degrade_ratio,
-        "shot_max_retry": settings.shot_max_retry,
-        "render_n_per_shot": settings.render_n_per_shot,
-        "image_chain": settings.image_chain,
-        "video_chain": settings.video_chain,
-        "provider_max_concurrency": settings.provider_max_concurrency,
-        # 提醒：测试时调小预算后上线忘记恢复，会导致几分钟内触发熔断停掉所有生成
-        "warning": "上线前确认 budget_total 为真实值，且 provider_max_concurrency 不超过供应商免费档配额",
-    }
 
 
 @router.get("/{project_id}/calls", summary="原始调用日志")

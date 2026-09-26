@@ -7,9 +7,9 @@ Flask 项目里手动接 Pydantic 是加分项，FastAPI 里则是框架原生�
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 T = TypeVar("T")
 
@@ -33,12 +33,13 @@ class Page(BaseModel, Generic[T]):
 
 
 class ProjectCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     title: str = Field(min_length=1, max_length=200)
-    synopsis: str | None = None
-    style: str = Field(default="日系厚涂", max_length=80)
-    global_negative_prompt: str | None = None
+    synopsis: str | None = Field(default=None, max_length=15000)
+    style: str = Field(default="日系厚涂", min_length=1, max_length=80)
+    global_negative_prompt: str | None = Field(default=None, max_length=2000)
     # 不传则用配置里的总预算
-    budget_cents: int | None = Field(default=None, ge=0)
+    budget_cents: int | None = Field(default=None, ge=0, le=20000)
 
 
 class ProjectOut(ORMModel):
@@ -57,6 +58,7 @@ class ProjectOut(ORMModel):
 
 
 class CharacterCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     project_id: str
     name: str = Field(min_length=1, max_length=80)
     # 结构化特征：只接受客观可验证描述，主观词会在锚定拼装时告警
@@ -65,6 +67,32 @@ class CharacterCreate(BaseModel):
     body_features: dict[str, str] = Field(default_factory=dict)
     outfit_features: dict[str, str] = Field(default_factory=dict)
     style_lock: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("face_features", "hair_features", "body_features", "outfit_features", "style_lock")
+    @classmethod
+    def validate_features(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 30 or any(
+            not k.strip() or not v.strip() or len(k) > 80 or len(v) > 500 for k, v in value.items()
+        ):
+            raise ValueError("每组最多 30 项；名称和描述不可空，分别不超过 80/500 字")
+        return value
+
+
+class CharacterUpdate(CharacterCreate):
+    expected_version: int = Field(ge=1)
+
+
+class CharacterConfirm(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    run_id: str = Field(min_length=1, max_length=36)
+    anchor_version: int = Field(ge=1)
+    reviewer: str = Field(min_length=1, max_length=80)
+
+
+class AnchorPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: Literal["normal", "strong", "strongest"] = "normal"
+    strengthen_fields: list[str] = Field(default_factory=list, max_length=30)
 
 
 class CharacterOut(ORMModel):
@@ -205,7 +233,9 @@ class GoldenLabelCreate(BaseModel):
     asset_key: str = Field(min_length=64, max_length=64, description="素材内容 sha256")
     asset_path: str
     character_id: str | None = None
-    label: str = Field(description="pass/facial_deformity/identity_drift/color_discontinuity/composition/compliance")
+    label: str = Field(
+        description="pass/facial_deformity/identity_drift/color_discontinuity/composition/compliance"
+    )
     label_detail: dict[str, Any] | None = None
     labeled_by: str = "manual"
 
@@ -264,9 +294,7 @@ class CostReport(BaseModel):
     shot_cost: list[dict[str, Any]]
     provider_stats: list[dict[str, Any]]
     qc_savings: dict[str, Any]
-    first_pass_rate: float | None = Field(
-        default=None, description="一次过合格率：attempt_no=1 即合格的比例"
-    )
+    first_pass_rate: float | None = Field(default=None, description="一次过合格率：attempt_no=1 即合格的比例")
 
 
 # ==================== 流水线与人机关卡 ====================

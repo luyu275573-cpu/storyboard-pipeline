@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.schemas import AttemptOut, GateDecision, RenderRequest, ShotCreate, ShotOut
+from app.schemas import GateDecision, RenderRequest, ShotCreate
 
 router = APIRouter()
 
@@ -16,10 +16,10 @@ router = APIRouter()
 @router.post("", summary="创建分镜镜头")
 async def create_shot(body: ShotCreate, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """TODO(impl):
-      1. 校验 scene_id 存在、seq 在同场景内唯一（撞唯一索引则抛 ConflictError）
-      2. max_retry 取 settings.shot_max_retry
-      3. 若同场景已有合格帧，自动写入 prev_locked_attempt_id（第 3 级锚定：时序递延）
-      4. 返回 ShotOut
+    1. 校验 scene_id 存在、seq 在同场景内唯一（撞唯一索引则抛 ConflictError）
+    2. max_retry 取 settings.shot_max_retry
+    3. 若同场景已有合格帧，自动写入 prev_locked_attempt_id（第 3 级锚定：时序递延）
+    4. 返回 ShotOut
     """
     raise NotImplementedError("TODO(impl): 由 Codex 实现")
 
@@ -95,16 +95,18 @@ async def compliance_gate(
 @router.post("/{shot_id}/video", summary="触发视频生成")
 async def generate_video(shot_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """TODO(impl):
-      1. 前置：必须已通过合规关卡（locked_attempt_id 非空），否则抛 GatePendingError
-      2. stage='video'，走 video_provider_chain（可灵优先，单价低）
-      3. 投递 ARQ 任务，分层超时：单次请求 < 任务总超时 < 前端等待
-      4. 预算不足时降级：降分辨率 / 换便宜供应商 / 挂起，不直接失败
+    1. 前置：必须已通过合规关卡（locked_attempt_id 非空），否则抛 GatePendingError
+    2. stage='video'，走 video_provider_chain（可灵优先，单价低）
+    3. 投递 ARQ 任务，分层超时：单次请求 < 任务总超时 < 前端等待
+    4. 预算不足时降级：降分辨率 / 换便宜供应商 / 挂起，不直接失败
     """
     raise NotImplementedError("TODO(impl): 由 Codex 实现")
 
 
 @router.post("/synthesize", summary="FFmpeg 时间轴合成")
-async def synthesize(project_id: str, run_id: str | None = None, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def synthesize(
+    project_id: str, run_id: str | None = None, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     """TODO(impl):
       1. 取该场景/项目所有 locked_attempt_id 的视频片段，按 (scene.seq, shot.seq) 排序
       2. 生成 FFmpeg concat demuxer 文件清单 → 拼接 → 转场 → 导出到 storage/exports

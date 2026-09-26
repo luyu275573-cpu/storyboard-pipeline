@@ -26,11 +26,9 @@ from app.models.enums import QCSeverity, QCSuggestion, QCVerdict
 
 def _dims(**overrides: float) -> dict:
     """构造五维打分，默认全部合格（低分）。"""
-    base = {d: 0.1 for d in DIMENSIONS}
+    base = dict.fromkeys(DIMENSIONS, 0.1)
     base.update(overrides)
-    return {
-        d: {"score": v, "ok": v < DIMENSION_THRESHOLD, "note": f"{d} note"} for d, v in base.items()
-    }
+    return {d: {"score": v, "ok": v < DIMENSION_THRESHOLD, "note": f"{d} note"} for d, v in base.items()}
 
 
 def _raw(
@@ -108,9 +106,7 @@ def test_model_verdict_blocked_is_respected(agent: QCAgent) -> None:
 
 def test_low_confidence_goes_manual_not_pass(agent: QCAgent) -> None:
     """不确定时不猜 pass——防止模型为了给出答案而强行判合格。"""
-    result = agent.parse_and_decide(
-        _raw(verdict="pass", confidence=CONFIDENCE_FLOOR - 0.01)
-    )
+    result = agent.parse_and_decide(_raw(verdict="pass", confidence=CONFIDENCE_FLOOR - 0.01))
     assert result.suggestion is QCSuggestion.MANUAL
     assert result.needs_manual
     assert result.verdict is not QCVerdict.PASS
@@ -139,23 +135,17 @@ def test_identity_drift_suggests_strengthen_anchor(agent: QCAgent) -> None:
 
 def test_color_only_suggests_redraw(agent: QCAgent) -> None:
     """仅色彩问题 → 局部重绘，比整张重抽便宜。"""
-    result = agent.parse_and_decide(
-        _raw(verdict="repairable", dimensions=_dims(color_discontinuity=0.6))
-    )
+    result = agent.parse_and_decide(_raw(verdict="repairable", dimensions=_dims(color_discontinuity=0.6)))
     assert result.suggestion is QCSuggestion.REDRAW
 
 
 def test_facial_deformity_suggests_reseed(agent: QCAgent) -> None:
-    result = agent.parse_and_decide(
-        _raw(verdict="repairable", dimensions=_dims(facial_deformity=0.7))
-    )
+    result = agent.parse_and_decide(_raw(verdict="repairable", dimensions=_dims(facial_deformity=0.7)))
     assert result.suggestion is QCSuggestion.RESEED
 
 
 def test_composition_suggests_reseed(agent: QCAgent) -> None:
-    result = agent.parse_and_decide(
-        _raw(verdict="repairable", dimensions=_dims(composition=0.65))
-    )
+    result = agent.parse_and_decide(_raw(verdict="repairable", dimensions=_dims(composition=0.65)))
     assert result.suggestion is QCSuggestion.RESEED
 
 
@@ -186,17 +176,13 @@ def test_compliance_beats_everything(agent: QCAgent) -> None:
 
 def test_severity_escalates_with_failure_count(agent: QCAgent) -> None:
     one = agent.parse_and_decide(_raw(dimensions=_dims(composition=0.6)))
-    two = agent.parse_and_decide(
-        _raw(dimensions=_dims(composition=0.6, color_discontinuity=0.6))
-    )
+    two = agent.parse_and_decide(_raw(dimensions=_dims(composition=0.6, color_discontinuity=0.6)))
     assert one.severity is QCSeverity.LOW
     assert two.severity is QCSeverity.MEDIUM
 
 
 def test_deformity_plus_other_is_high(agent: QCAgent) -> None:
-    result = agent.parse_and_decide(
-        _raw(dimensions=_dims(facial_deformity=0.7, composition=0.6))
-    )
+    result = agent.parse_and_decide(_raw(dimensions=_dims(facial_deformity=0.7, composition=0.6)))
     assert result.severity is QCSeverity.HIGH
 
 
@@ -239,12 +225,25 @@ def test_non_dict_raises(agent: QCAgent) -> None:
         agent.parse_and_decide(["not", "a", "dict"])  # type: ignore[arg-type]
 
 
-def test_malformed_score_coerced_to_zero(agent: QCAgent) -> None:
-    """分数是字符串或 null 时不应崩，按 0（合格）处理。"""
+@pytest.mark.parametrize("value", [None, "0.1", True, -0.1, 1.1, float("nan"), float("inf")])
+def test_invalid_score_cannot_pass(agent: QCAgent, value) -> None:
     dims = _dims()
-    dims["composition"]["score"] = None
-    result = agent.parse_and_decide(_raw(dimensions=dims))
-    assert result.dimensions["composition"]["score"] == 0.0
+    dims["composition"]["score"] = value
+    with pytest.raises(QCParseError):
+        agent.parse_and_decide(_raw(dimensions=dims))
+
+
+def test_missing_dimension_cannot_pass(agent: QCAgent) -> None:
+    dims = _dims()
+    del dims["compliance"]
+    with pytest.raises(QCParseError):
+        agent.parse_and_decide(_raw(dimensions=dims))
+
+
+@pytest.mark.parametrize("value", [None, "1", True, 1.1, float("nan")])
+def test_invalid_confidence_cannot_pass(agent: QCAgent, value) -> None:
+    with pytest.raises(QCParseError):
+        agent.parse_and_decide(_raw(confidence=value))
 
 
 # ==================== Prompt 组装 ====================
@@ -268,14 +267,14 @@ def test_user_prompt_injects_anchor_version() -> None:
 
 def test_baseline_frame_changes_prompt_wording() -> None:
     """有无基准帧，对色彩断层维度的判定要求不同，Prompt 必须区分。"""
-    common = dict(
-        anchor_prompt="x",
-        anchor_version=1,
-        shot_size="中景",
-        composition="c",
-        action_text="a",
-        dialogue=None,
-    )
+    common = {
+        "anchor_prompt": "x",
+        "anchor_version": 1,
+        "shot_size": "中景",
+        "composition": "c",
+        "action_text": "a",
+        "dialogue": None,
+    }
     with_base = build_qc_user_prompt(has_baseline_frame=True, **common)
     without = build_qc_user_prompt(has_baseline_frame=False, **common)
 

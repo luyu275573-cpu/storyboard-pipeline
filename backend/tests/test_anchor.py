@@ -70,9 +70,7 @@ def test_subjective_words_are_detected(caplog: pytest.LogCaptureFixture) -> None
 def test_strong_level_prepends_drifted_fields(sample_character: AnchorInput) -> None:
     """强化锚定时，漂移字段要前置强调。"""
     normal = build_anchor_prompt(sample_character, level="normal")
-    strong = build_anchor_prompt(
-        sample_character, level="strong", strengthen_fields=["发色"]
-    )
+    strong = build_anchor_prompt(sample_character, level="strong", strengthen_fields=["发色"])
     assert strong != normal
     assert strong.startswith("[必须严格保持]")
     # 前置强调里应含漂移字段的值
@@ -81,9 +79,7 @@ def test_strong_level_prepends_drifted_fields(sample_character: AnchorInput) -> 
 
 def test_strongest_level_adds_negative_constraint(sample_character: AnchorInput) -> None:
     """最高强度要追加负面约束（如禁止非设定发色）。"""
-    strongest = build_anchor_prompt(
-        sample_character, level="strongest", strengthen_fields=["发色"]
-    )
+    strongest = build_anchor_prompt(sample_character, level="strongest", strengthen_fields=["发色"])
     assert "[严禁]" in strongest
     assert "非设定发色" in strongest
 
@@ -109,9 +105,7 @@ def test_next_anchor_level_progression() -> None:
 
 def test_negative_prompt_merges_and_dedupes() -> None:
     """全局负面词与画风负面词合并去重，保持顺序。"""
-    merged = build_negative_prompt(
-        "模糊, 低质量", {"负面提示词": "3D渲染, 模糊, 塑料感"}
-    )
+    merged = build_negative_prompt("模糊, 低质量", {"负面提示词": "3D渲染, 模糊, 塑料感"})
     parts = [p.strip() for p in merged.split(",")]
     assert parts.count("模糊") == 1  # 去重
     assert "3D渲染" in parts

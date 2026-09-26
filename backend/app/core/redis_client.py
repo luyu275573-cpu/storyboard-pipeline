@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
+from typing import cast
 
 import redis.asyncio as redis
 
@@ -125,18 +126,19 @@ async def publish_progress(run_id: str, stage: str, payload: dict) -> None:
     """写进度到 Redis Hash 并推入 List 供 SSE 消费。"""
     r = get_redis()
     pkey = KEY_RUN_PROGRESS.format(run_id=run_id)
-    import json
 
-    await r.hset(pkey, stage, json.dumps(payload, ensure_ascii=False))
+    await cast(Awaitable[int], r.hset(pkey, stage, json.dumps(payload, ensure_ascii=False)))
     await r.expire(pkey, TTL_PROGRESS)
-    await r.rpush(f"{pkey}:events", json.dumps({"stage": stage, **payload}, ensure_ascii=False))
+    await cast(
+        Awaitable[int], r.rpush(f"{pkey}:events", json.dumps({"stage": stage, **payload}, ensure_ascii=False))
+    )
     await r.expire(f"{pkey}:events", TTL_PROGRESS)
-    await r.ltrim(f"{pkey}:events", -500, -1)  # 只保留最近 500 条，防内存膨胀
+    await cast(Awaitable[str], r.ltrim(f"{pkey}:events", -500, -1))  # 只保留最近 500 条，防内存膨胀
 
 
 async def consume_progress(run_id: str, timeout_s: float = 15.0) -> list[str]:
     """阻塞读取进度事件（SSE 用）。"""
     r = get_redis()
     pkey = f"{KEY_RUN_PROGRESS.format(run_id=run_id)}:events"
-    result = await r.blpop([pkey], timeout=int(timeout_s))
+    result = await cast(Awaitable[list[str]], r.blpop([pkey], timeout=int(timeout_s)))
     return [result[1]] if result else []

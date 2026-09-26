@@ -18,9 +18,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from app.core.config import settings
 from app.models.enums import ProviderKind
 from app.providers.base import BaseProvider, CallContext, ProviderResult, ProviderRouter
 from app.services.cost_service import CostService

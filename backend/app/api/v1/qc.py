@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.schemas import ConfusionMatrix, GoldenLabelCreate, QCInspectRequest, QCReportOut, QCReviewRequest
+from app.schemas import GoldenLabelCreate, QCInspectRequest, QCReviewRequest
 
 router = APIRouter()
 
@@ -124,7 +124,9 @@ async def evaluate(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.get("/first-pass-rate", summary="一次过合格率（含盲抽基线对照）")
-async def first_pass_rate(project_id: str, baseline: bool = False, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def first_pass_rate(
+    project_id: str, baseline: bool = False, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     """TODO(impl):
       1. first_pass = attempt_no=1 且 qc verdict=pass 的镜头数 / 总镜头数
       2. baseline=True 时只统计"无锚定无质检"的盲抽批次（需在 attempt 上打标区分）

@@ -52,9 +52,7 @@ class RenderAttempt(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    shot_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("shots.id", ondelete="CASCADE"), index=True
-    )
+    shot_id: Mapped[str] = mapped_column(String(36), ForeignKey("shots.id", ondelete="CASCADE"), index=True)
     attempt_no: Mapped[int] = mapped_column(Integer)
     stage: Mapped[str] = mapped_column(String(20), default="image")
 
@@ -79,9 +77,7 @@ class RenderAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     shot: Mapped[Shot] = relationship(back_populates="attempts")
-    qc_reports: Mapped[list[QCReport]] = relationship(
-        back_populates="attempt", cascade="all, delete-orphan"
-    )
+    qc_reports: Mapped[list[QCReport]] = relationship(back_populates="attempt", cascade="all, delete-orphan")
 
 
 class QCReport(Base):
@@ -191,9 +187,7 @@ class BudgetLedger(Base):
     scope_key: Mapped[str] = mapped_column(String(120))  # 镜头 ID 或 image/video/vision/llm
     budget_cents: Mapped[int] = mapped_column(Integer)
     spent_cents: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class Export(Base):

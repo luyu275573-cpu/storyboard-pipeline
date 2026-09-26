@@ -95,7 +95,9 @@ async def enqueue_pipeline_run(ctx: dict[str, Any], run_id: str) -> dict[str, An
     raise NotImplementedError("TODO(impl): 由 Codex 实现")
 
 
-async def enqueue_synthesize(ctx: dict[str, Any], project_id: str, run_id: str | None = None) -> dict[str, Any]:
+async def enqueue_synthesize(
+    ctx: dict[str, Any], project_id: str, run_id: str | None = None
+) -> dict[str, Any]:
     """FFmpeg 合成任务。
 
     TODO(impl):
@@ -133,9 +135,8 @@ async def enqueue_qc_evaluate(ctx: dict[str, Any], project_id: str | None = None
 
 async def startup(ctx: dict[str, Any]) -> None:
     """Worker 启动：建 DB 引擎与共享 httpx client。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
     import httpx
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     ctx["engine"] = create_async_engine(
         settings.database_url,

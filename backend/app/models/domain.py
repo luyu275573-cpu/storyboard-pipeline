@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
@@ -22,6 +23,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.enums import GateStatus, ShotStatus
+
+if TYPE_CHECKING:
+    from app.models.tracking import RenderAttempt
 
 
 def _uuid() -> str:
@@ -42,13 +46,9 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft")
     budget_cents: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    characters: Mapped[list[Character]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
+    characters: Mapped[list[Character]] = relationship(back_populates="project", cascade="all, delete-orphan")
     scenes: Mapped[list[Scene]] = relationship(back_populates="project", cascade="all, delete-orphan")
     runs: Mapped[list[PipelineRun]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
@@ -85,14 +85,10 @@ class Character(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     project: Mapped[Project] = relationship(back_populates="characters")
-    refs: Mapped[list[CharacterRef]] = relationship(
-        back_populates="character", cascade="all, delete-orphan"
-    )
+    refs: Mapped[list[CharacterRef]] = relationship(back_populates="character", cascade="all, delete-orphan")
 
 
 class CharacterRef(Base):
@@ -154,9 +150,7 @@ class Shot(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    scene_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("scenes.id", ondelete="CASCADE"), index=True
-    )
+    scene_id: Mapped[str] = mapped_column(String(36), ForeignKey("scenes.id", ondelete="CASCADE"), index=True)
     seq: Mapped[int] = mapped_column(Integer)
 
     shot_size: Mapped[str] = mapped_column(String(20), default="中景")
@@ -180,14 +174,10 @@ class Shot(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     scene: Mapped[Scene] = relationship(back_populates="shots")
-    attempts: Mapped[list[RenderAttempt]] = relationship(
-        back_populates="shot", cascade="all, delete-orphan"
-    )
+    attempts: Mapped[list[RenderAttempt]] = relationship(back_populates="shot", cascade="all, delete-orphan")
 
 
 class PipelineRun(Base):
@@ -213,9 +203,7 @@ class PipelineRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     project: Mapped[Project] = relationship(back_populates="runs")
-    gates: Mapped[list[ReviewGate]] = relationship(
-        back_populates="run", cascade="all, delete-orphan"
-    )
+    gates: Mapped[list[ReviewGate]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
 class ReviewGate(Base):

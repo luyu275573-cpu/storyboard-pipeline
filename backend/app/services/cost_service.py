@@ -11,13 +11,15 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import BudgetExceededError
-from app.core.redis_client import get_redis, KEY_BUDGET_HOT
+from app.core.redis_client import KEY_BUDGET_HOT, get_redis
 from app.models.enums import BudgetScope
 
 logger = logging.getLogger(__name__)
@@ -106,7 +108,7 @@ class CostService:
                 ),
                 {"cost": cost_cents, "pid": project_id, "scope": scope, "key": key},
             )
-            if result.rowcount == 0:
+            if cast(CursorResult, result).rowcount == 0:
                 logger.warning(
                     "预算熔断 scope=%s key=%s cost=%s project=%s", scope, key, cost_cents, project_id
                 )

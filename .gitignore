@@ -46,6 +46,9 @@ dist/
 .nuxt/
 .next/
 .output/
+*.tsbuildinfo
+test-results/
+playwright-report/
 
 # ---------- 环境变量 ----------
 # ⚠️ .env 包含密钥和数据库密码，绝对不能提交
