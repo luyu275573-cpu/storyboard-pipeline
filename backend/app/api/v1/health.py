@@ -54,16 +54,25 @@ def _check_providers() -> dict[str, Any]:
         "image": {
             "jimeng": bool(settings.volc_access_key and settings.volc_secret_key),
             "vidu": bool(settings.vidu_api_key),
+            "siliconflow": bool(settings.siliconflow_api_key),
         },
         "video": {
             "kling": bool(settings.kling_access_key and settings.kling_secret_key),
             "jimeng": bool(settings.volc_access_key and settings.volc_secret_key),
         },
         # 质检走免费 Token 额度，未配置则质检 Agent 不可用
-        "vision": {"dashscope": bool(settings.dashscope_api_key)},
-        "llm": {"dashscope": bool(settings.dashscope_api_key)},
+        "vision": {
+            "dashscope": bool(settings.dashscope_api_key),
+            "siliconflow": bool(settings.siliconflow_api_key),
+        },
+        "llm": {
+            "dashscope": bool(settings.dashscope_api_key),
+            "siliconflow": bool(settings.siliconflow_api_key),
+        },
         "image_chain": settings.image_chain,
         "video_chain": settings.video_chain,
+        "vision_chain": settings.vision_chain,
+        "llm_chain": settings.llm_chain,
     }
 
 

@@ -147,7 +147,11 @@ class ProviderRouter:
         configured = (
             settings.image_chain
             if kind == ProviderKind.IMAGE
-            else (settings.video_chain if kind == ProviderKind.VIDEO else [])
+            else (
+                settings.video_chain
+                if kind == ProviderKind.VIDEO
+                else (settings.vision_chain if kind == ProviderKind.VISION else settings.llm_chain)
+            )
         )
         names = [name for capability, name in self.providers if capability == kind]
         # 单一适配器也可直接 generate；优先按配置排序，再使用显式注册的同能力适配器。

@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     kling_secret_key: str = ""
     kling_video_model: str = "kling-v3-std"
 
+    # 硅基流动：Provider 接入后启用；当前仅作为配置模板
+    siliconflow_api_key: str = ""
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    siliconflow_image_model: str = "Qwen/Qwen-Image-Edit-2509"
+    siliconflow_vision_model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    siliconflow_llm_model: str = "Qwen/Qwen3-32B"
+    siliconflow_video_model: str = "Wan-AI/Wan2.2-I2V-A14B"
+
     # ---------- Provider 行为 ----------
     provider_max_concurrency: int = 1
     provider_timeout_s: int = 60
@@ -70,8 +78,10 @@ class Settings(BaseSettings):
     # ---------- 流水线 ----------
     render_n_per_shot: int = 2
     qc_parse_max_retry: int = 2
-    image_provider_chain: str = "jimeng,vidu"
+    image_provider_chain: str = "siliconflow,jimeng,vidu"
     video_provider_chain: str = "kling,jimeng"
+    vision_provider_chain: str = "siliconflow,dashscope"
+    llm_provider_chain: str = "siliconflow,dashscope"
 
     # ---------- 存储与工具 ----------
     storage_root: str = "../storage"
@@ -108,6 +118,14 @@ class Settings(BaseSettings):
         return [p.strip() for p in self.video_provider_chain.split(",") if p.strip()]
 
     @property
+    def vision_chain(self) -> list[str]:
+        return [p.strip() for p in self.vision_provider_chain.split(",") if p.strip()]
+
+    @property
+    def llm_chain(self) -> list[str]:
+        return [p.strip() for p in self.llm_provider_chain.split(",") if p.strip()]
+
+    @property
     def storage_path(self) -> Path:
         p = Path(self.storage_root)
         return p if p.is_absolute() else (BACKEND_ROOT / p).resolve()
@@ -118,10 +136,10 @@ class Settings(BaseSettings):
         return p if p.is_absolute() else (BACKEND_ROOT / p).resolve()
 
     def has_image_credentials(self) -> bool:
-        return bool(self.volc_access_key or self.vidu_api_key)
+        return bool(self.volc_access_key or self.vidu_api_key or self.siliconflow_api_key)
 
     def has_vision_credentials(self) -> bool:
-        return bool(self.dashscope_api_key)
+        return bool(self.dashscope_api_key or self.siliconflow_api_key)
 
 
 @lru_cache(maxsize=1)
