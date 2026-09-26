@@ -1,0 +1,132 @@
+# ============================================================
+# 分镜流水线 · Docker Compose 编排
+# ============================================================
+# 启动：docker compose up -d
+# 日志：docker compose logs -f api worker
+# 停止：docker compose down（保留数据卷）
+# 销毁：docker compose down -v（⚠️ 删除所有数据）
+# ============================================================
+
+services:
+  # ---------- MySQL 8 ----------
+  mysql:
+    image: mysql:8.0
+    container_name: sbp-mysql
+    restart: unless-stopped
+    environment:
+      # 从 .env 注入，不要在 compose 文件里写死密码
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-sbp_root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-storyboard_pipeline}
+      MYSQL_USER: ${MYSQL_USER:-sbp}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-sbp_password}
+      # utf8mb4 支持 emoji 和多语言字符，视频标题/描述可能包含
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    ports:
+      # 仅暴露到 localhost，防止外部直连数据库
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # 健康检查：mysqladmin ping 是最轻量的存活探测
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-sbp_root_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - sbp-net
+
+  # ---------- Redis ----------
+  redis:
+    image: redis:7-alpine
+    container_name: sbp-redis
+    restart: unless-stopped
+    # 持久化 RDB：队列任务不能丢
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - sbp-net
+
+  # ---------- FastAPI API Server ----------
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: sbp-api
+    restart: always
+    ports:
+      - "127.0.0.1:8100:8100"
+    # 环境变量从宿主机 .env 注入
+    env_file:
+      - ../backend/.env
+    environment:
+      # 容器内路径与宿主机不同，需要覆盖
+      STORAGE_ROOT: /app/storage
+      LOG_DIR: /app/logs
+      DATABASE_URL: mysql+asyncmy://${MYSQL_USER:-sbp}:${MYSQL_PASSWORD:-sbp_password}@mysql:3306/${MYSQL_DATABASE:-storyboard_pipeline}
+      REDIS_URL: redis://redis:6379/3
+      APP_ENV: production
+      APP_DEBUG: "false"
+    volumes:
+      # storage 和 logs 挂载到宿主机，方便备份和排查
+      - storage_data:/app/storage
+      - logs_data:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sbp-net
+
+  # ---------- ARQ Worker ----------
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: sbp-worker
+    restart: always
+    # ★ 覆盖 CMD：用 arq 替代 uvicorn
+    command: ["arq", "app.workers.arq_settings.WorkerSettings"]
+    env_file:
+      - ../backend/.env
+    environment:
+      STORAGE_ROOT: /app/storage
+      LOG_DIR: /app/logs
+      DATABASE_URL: mysql+asyncmy://${MYSQL_USER:-sbp}:${MYSQL_PASSWORD:-sbp_password}@mysql:3306/${MYSQL_DATABASE:-storyboard_pipeline}
+      REDIS_URL: redis://redis:6379/3
+      APP_ENV: production
+      APP_DEBUG: "false"
+    volumes:
+      - storage_data:/app/storage
+      - logs_data:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sbp-net
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  storage_data:
+    driver: local
+  logs_data:
+    driver: local
+
+networks:
+  sbp-net:
+    driver: bridge

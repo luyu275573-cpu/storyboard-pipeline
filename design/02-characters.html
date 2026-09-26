@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>分镜流水线 · 02 角色与锚定管理</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1920px;height:1080px;background:#0f0f1a;color:#e0e0e0;font:14px/1.5 "Microsoft YaHei","Segoe UI",sans-serif;overflow:hidden}
+.app{display:flex;height:100%}
+.side{width:216px;background:#141422;border-right:1px solid #23233a;padding:20px 12px;display:flex;flex-direction:column;gap:4px}
+.logo{display:flex;align-items:center;gap:10px;padding:4px 10px 20px}
+.logo .mk{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#4ecdc4,#7c6cf0);display:flex;align-items:center;justify-content:center;font-weight:700;color:#0f0f1a;font-size:15px}
+.logo b{font-size:15px}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;color:#a0a0b0}
+.nav.on{background:#252540;color:#e0e0e0;box-shadow:inset 3px 0 0 #4ecdc4}
+.nav svg{width:17px;height:17px;fill:currentColor;opacity:.9}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:62px;display:flex;align-items:center;gap:14px;padding:0 28px;border-bottom:1px solid #23233a;background:#12121e}
+.top h1{font-size:17px;font-weight:600}
+.crumb{color:#606070;font-size:12px}
+.spacer{flex:1}
+.btn{height:36px;padding:0 16px;border-radius:9px;border:1px solid #2a2a45;background:#1a1a2e;color:#e0e0e0;font-size:13px;display:flex;align-items:center;gap:6px}
+.btn.pri{background:#4ecdc4;border-color:#4ecdc4;color:#062725;font-weight:600}
+.pill{height:23px;padding:0 10px;border-radius:12px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.pill.ok{background:rgba(61,220,151,.15);color:#3ddc97}
+.pill.warn{background:rgba(255,200,87,.15);color:#ffc857}
+.pill.bad{background:rgba(255,107,107,.15);color:#ff6b6b}
+.pill.acc{background:rgba(78,205,196,.15);color:#4ecdc4}
+.pill.mut{background:#252540;color:#a0a0b0}
+.content{flex:1;display:grid;grid-template-columns:280px 1fr 540px;gap:18px;padding:20px 28px;overflow:hidden;position:relative}
+.panel{background:#1a1a2e;border:1px solid #23233a;border-radius:14px;padding:16px;overflow:hidden;display:flex;flex-direction:column}
+.panel h2{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.panel h2 .n{color:#606070;font-weight:400;font-size:12px}
+.roster{display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.r{display:flex;gap:10px;align-items:center;padding:10px;border-radius:11px;border:1px solid #23233a}
+.r.on{background:#252540;border-color:#4ecdc4}
+.r .ava{width:40px;height:40px;border-radius:10px;flex:none}
+.a1{background:linear-gradient(135deg,#2b3a6b,#3f6f8a)}
+.a2{background:linear-gradient(135deg,#6b2b4f,#8a3f5f)}
+.a3{background:linear-gradient(135deg,#2b6b52,#3f8a6f)}
+.r b{font-size:14px;display:block}
+.r span{color:#606070;font-size:11px}
+.mid{gap:14px}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:8px 12px;font-size:13px}
+.kv dt{color:#606070}
+.kv dd{color:#e0e0e0}
+.box{background:#151527;border:1px solid #23233a;border-radius:11px;padding:12px 14px}
+.box h3{font-size:12px;color:#a0a0b0;font-weight:500;margin-bottom:8px;display:flex;justify-content:space-between}
+.mono{font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.85;color:#cfe8e5;white-space:pre-wrap}
+.mono em{color:#4ecdc4;font-style:normal;font-weight:600}
+.mono s{color:#ff6b6b;text-decoration:none;background:rgba(255,107,107,.12);border-radius:3px;padding:0 3px}
+.refs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.ref{border-radius:10px;overflow:hidden;border:1px solid #23233a;position:relative}
+.ref i{display:block;height:96px}
+.ref span{position:absolute;left:0;right:0;bottom:0;background:rgba(15,15,26,.78);font-size:11px;color:#a0a0b0;padding:4px 8px;display:flex;justify-content:space-between}
+.ref .qc{position:absolute;top:6px;right:6px}
+.right{gap:12px}
+.lvl{display:flex;gap:8px}
+.lv{flex:1;height:34px;border-radius:9px;border:1px solid #2a2a45;background:#151527;color:#606070;font-size:12.5px;display:flex;align-items:center;justify-content:center;gap:6px}
+.lv.on{border-color:#7c6cf0;color:#cfc4ff;background:rgba(124,108,240,.12)}
+.drift{display:flex;flex-direction:column;gap:7px}
+.drow{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.drow .k{width:70px;color:#a0a0b0}
+.drow .bar{flex:1;height:7px;background:#252540;border-radius:4px;overflow:hidden}
+.drow .bar i{display:block;height:100%;border-radius:4px}
+.hi{background:linear-gradient(90deg,#ff6b6b,#ffc857)}
+.lo{background:#3ddc97}
+.midbar{background:#ffc857}
+.drow b{width:44px;text-align:right;font-weight:500}
+.wm{position:absolute;right:28px;bottom:12px;color:#3a3a55;font-size:11px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo"><span class="mk">镜</span><b>分镜流水线</b></div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg>项目</div>
+    <div class="nav on"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6z"/></svg>角色与锚定</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.5 9.4-8 11-4.5-1.6-8-6-8-11V5z"/></svg>质检与评估</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M12 4a9 9 0 0 1 9 9h-9z" opacity=".5"/><path d="M10 4.2A9 9 0 1 0 21 15h-9z"/></svg>预算与成本</div>
+  </aside>
+  <div class="main">
+    <div class="top">
+      <span class="crumb">《山海拾遗》第一季 /</span><h1>角色与锚定管理</h1>
+      <div class="spacer"></div>
+      <span class="pill acc">锚定版本 v3</span>
+      <button class="btn">预览锚定 Prompt</button>
+      <button class="btn pri">保存并递增版本</button>
+    </div>
+    <div class="content">
+      <div class="panel">
+        <h2>角色档案 <span class="n">3 / 已确认 2</span></h2>
+        <div class="roster">
+          <div class="r on"><div class="ava a1"></div><div><b>林晚 <span class="pill ok">已确认</span></b><span>主角 · 锚定 v3 · 基准图 4</span></div></div>
+          <div class="r"><div class="ava a2"></div><div><b>阿槿 <span class="pill ok">已确认</span></b><span>主角 · 锚定 v2 · 基准图 4</span></div></div>
+          <div class="r"><div class="ava a3"></div><div><b>老舟 <span class="pill warn">待确认</span></b><span>配角 · 锚定 v1 · 基准图 2</span></div></div>
+        </div>
+        <div class="box" style="margin-top:auto">
+          <h3>关卡 A 状态</h3>
+          <div style="font-size:12.5px;color:#a0a0b0;line-height:1.8">角色「老舟」未确认，禁止进入分镜与抽卡。<br>审核人：—　<span class="pill warn">pending</span></div>
+        </div>
+      </div>
+      <div class="panel mid">
+        <h2>结构化特征（程序化拼装，禁止手写） <span class="n">主观词检测：0 命中</span></h2>
+        <dl class="kv">
+          <dt>面部</dt><dd>脸型=鹅蛋脸　眼距=标准　眼型=丹凤眼　标记=左眼下泪痣</dd>
+          <dt>发型</dt><dd>发色=<span style="color:#4ecdc4">#1A1A1A 纯黑</span>　长度=及腰　发型=低马尾　纹理=顺滑</dd>
+          <dt>服饰</dt><dd>款式=改良汉服交领　材质=亚麻　配件=银色发簪　配色=月白+靛蓝滚边</dd>
+          <dt>画风锁</dt><dd>日系厚涂　低饱和冷色　负面：3D渲染 / 塑料感 / 欧美脸 / 多余手指</dd>
+        </dl>
+        <div class="box">
+          <h3>anchor_prompt v3 <span class="pill mut">逐字节确定性</span></h3>
+          <div class="mono">角色[林晚] 面部: 标记=左眼下泪痣, 眼型=丹凤眼, 眼距=标准, 脸型=鹅蛋脸;
+发型: 发色=<em>#1A1A1A 纯黑</em>, 发型=低马尾, 纹理=顺滑, 长度=及腰;
+服饰: 款式=改良汉服交领, 配色=月白主色+靛蓝滚边, 材质=亚麻, 配件=银色发簪;
+画风: 日系厚涂; 色调: 低饱和冷色</div>
+        </div>
+        <div class="box">
+          <h3>基准图（第 2 级锚定） <span class="pill ok">4 / 4 已过质检</span></h3>
+          <div class="refs">
+            <div class="ref"><i class="a1"></i><span class="qc pill ok">✓</span><span>正面半身<em style="color:#4ecdc4;font-style:normal">主</em></span></div>
+            <div class="ref"><i class="a1" style="filter:hue-rotate(20deg)"></i><span class="qc pill ok">✓</span><span>侧面半身</span></div>
+            <div class="ref"><i class="a1" style="filter:brightness(.8)"></i><span class="qc pill ok">✓</span><span>全身</span></div>
+            <div class="ref"><i class="a1" style="filter:saturate(1.4)"></i><span class="qc pill ok">✓</span><span>表情包×4</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel right">
+        <h2>锚定强度与漂移诊断</h2>
+        <div class="lvl"><span class="lv">normal</span><span class="lv">strong</span><span class="lv on">strongest ● 当前</span></div>
+        <div class="box">
+          <h3>最近质检反馈（attempt #14 → #17）</h3>
+          <div class="drift">
+            <div class="drow"><span class="k">发色</span><div class="bar"><i class="hi" style="width:78%"></i></div><b>0.78</b></div>
+            <div class="drow"><span class="k">眼距</span><div class="bar"><i class="midbar" style="width:46%"></i></div><b>0.46</b></div>
+            <div class="drow"><span class="k">服饰配色</span><div class="bar"><i class="lo" style="width:18%"></i></div><b>0.18</b></div>
+            <div class="drow"><span class="k">五官结构</span><div class="bar"><i class="lo" style="width:12%"></i></div><b>0.12</b></div>
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:#a0a0b0;line-height:1.8">阈值 0.40。发色连续 3 轮漂移 → 已自动升级至 strongest 并在负面词追加「非设定发色」。<br>已达最高强度仍漂移 → <span style="color:#ffc857">下一轮转人工检查基准图</span>。</div>
+        </div>
+        <div class="box" style="flex:1">
+          <h3>时序递延（第 3 级）</h3>
+          <div style="font-size:12.5px;color:#a0a0b0;line-height:2">场景 S02 已锁定基准帧 attempt#12 →<br>S02-03、S02-05、S02-07 按 <span style="color:#4ecdc4">prev_locked_attempt_id</span> 链式传递，色彩断层维度从 0.51 → 0.22。</div>
+        </div>
+      </div>
+      <div class="wm">分镜流水线 · 设计稿 v1 · PAGE 02 / 角色与锚定管理 · 2026-09-24</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

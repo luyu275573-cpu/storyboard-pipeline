@@ -1,0 +1,61 @@
+# ============================================================
+# 分镜流水线 · FastAPI (uvicorn) systemd 服务
+# ============================================================
+# 安装：cp storyboard-api.service /etc/systemd/system/
+#       systemctl daemon-reload
+#       systemctl enable --now storyboard-api
+# ============================================================
+
+[Unit]
+Description=Storyboard Pipeline - FastAPI API Server
+Documentation=https://github.com/your-org/storyboard-pipeline
+# 确保网络和 Redis 就绪后再启动，避免启动时连接失败产生误导日志
+After=network.target redis-server.service mysql.service
+Wants=redis-server.service mysql.service
+
+[Service]
+Type=simple
+# [TODO] 替换为实际部署用户，不要用 root 运行 Web 服务
+User=www-data
+Group=www-data
+
+# 工作目录设为 backend/，这样 .env、alembic.ini 等相对路径才能正确解析
+WorkingDirectory=/opt/storyboard-pipeline/backend
+
+# 环境变量从 .env 文件加载，与代码中 pydantic-settings 读取同一个文件
+# 这样改配置只需编辑一个地方，systemd 和 Python 看到的值一致
+EnvironmentFile=/opt/storyboard-pipeline/backend/.env
+
+# uvicorn 启动命令
+# --host 0.0.0.0：监听所有网卡，Nginx 通过 127.0.0.1 回环访问
+# --port 8100：与 config.py 中 app_port 默认值一致
+# --workers 4：视频生成是 IO 密集型（等模型 API），多 worker 提高吞吐
+#   注意：每个 worker 是独立进程，内存占用 × N；服务器内存不足时减少
+# --timeout-keep-alive 65：比 Nginx 的 proxy_read_timeout 略大，
+#   防止 Nginx 还没断开时 uvicorn 先关连接导致 502
+ExecStart=/opt/storyboard-pipeline/backend/.venv/bin/uvicorn \
+    app.main:app \
+    --host 0.0.0.0 \
+    --port 8100 \
+    --workers 4 \
+    --timeout-keep-alive 65 \
+    --log-level info
+
+# ★ 崩溃自动重启，间隔 5 秒避免快速循环重启耗尽资源
+Restart=always
+RestartSec=5
+
+# 标准输出/错误写入 journal，方便 journalctl -u storyboard-api 查看
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=storyboard-api
+
+# 安全加固：限制服务只能访问必要资源
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# storage 和 logs 需要写入权限
+ReadWritePaths=/opt/storyboard-pipeline/storage /opt/storyboard-pipeline/logs
+
+[Install]
+WantedBy=multi-user.target

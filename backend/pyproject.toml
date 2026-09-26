@@ -1,0 +1,52 @@
+[project]
+name = "storyboard-pipeline"
+version = "0.1.0"
+description = "AI 漫剧分镜流水线 · 生产调度与质量控制平台"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = [".venv", "migrations/versions", "storage"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ASYNC",  # flake8-async：捕获 async 中的同步阻塞调用
+    "S",   # flake8-bandit：安全
+    "RET", # flake8-return
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "S101",  # 测试中允许 assert
+    "B008",  # FastAPI Depends() 在默认参数中是官方推荐写法
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]
+"migrations/*" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
+markers = [
+    "integration: 需要真实模型 API 或数据库的集成测试（默认跳过）",
+    "slow: 耗时较长的测试",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+exclude = ["migrations/versions", "storage"]

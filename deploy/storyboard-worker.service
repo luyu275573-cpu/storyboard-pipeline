@@ -1,0 +1,57 @@
+# ============================================================
+# 分镜流水线 · ARQ Worker systemd 服务
+# ============================================================
+# 与 storyboard-api.service 的关键差异：
+#   1. 入口是 arq CLI 而非 uvicorn
+#   2. 只有单进程（ARQ worker 内部用 asyncio 并发，不需要多进程）
+#   3. 超时更长（视频生成是分钟级任务，不能被 SIGTERM 提前杀掉）
+#   4. 不监听端口，只消费 Redis 队列
+# ============================================================
+# 安装：cp storyboard-worker.service /etc/systemd/system/
+#       systemctl daemon-reload
+#       systemctl enable --now storyboard-worker
+# ============================================================
+
+[Unit]
+Description=Storyboard Pipeline - ARQ Task Worker
+Documentation=https://github.com/your-org/storyboard-pipeline
+# Worker 依赖 Redis（队列）和 MySQL（写入结果），必须在它们之后启动
+After=network.target redis-server.service mysql.service
+Wants=redis-server.service mysql.service
+
+[Service]
+Type=simple
+# [TODO] 替换为实际部署用户，与 api 服务保持一致以便共享 storage 文件权限
+User=www-data
+Group=www-data
+
+WorkingDirectory=/opt/storyboard-pipeline/backend
+EnvironmentFile=/opt/storyboard-pipeline/backend/.env
+
+# arq 命令指向 WorkerSettings 类，其中定义了队列名、并发数、任务函数等
+# 不使用 --watch（开发模式的热重载），生产环境代码变更应走发布流程
+ExecStart=/opt/storyboard-pipeline/backend/.venv/bin/arq \
+    app.workers.arq_settings.WorkerSettings
+
+# ★ 崩溃自动重启
+Restart=always
+RestartSec=5
+
+# ★ 关键：停止时给足优雅退出时间
+# 视频生成任务可能运行数分钟，收到 SIGTERM 后需要等待当前任务完成
+# 默认 TimeoutStopSec=90s 太短，会被 SIGKILL 强杀导致任务中断
+# 设为 600s（10分钟），覆盖最长视频任务的剩余执行时间
+TimeoutStopSec=600
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=storyboard-worker
+
+# 安全加固（与 api 服务相同）
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/storyboard-pipeline/storage /opt/storyboard-pipeline/logs
+
+[Install]
+WantedBy=multi-user.target

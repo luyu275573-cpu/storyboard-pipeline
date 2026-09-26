@@ -1,0 +1,36 @@
+# ===== Web 框架 =====
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+pydantic>=2.9,<3.0
+pydantic-settings>=2.6,<3.0
+
+# ===== 数据库（必须异步驱动，禁止同步 PyMySQL：会卡死事件循环）=====
+sqlalchemy[asyncio]>=2.0.36,<2.1
+asyncmy>=0.2.9,<0.3          # MySQL 异步驱动
+cryptography>=44,<50        # MySQL 8 caching_sha2_password 首次连接的 RSA 认证
+alembic>=1.14,<2.0           # 迁移
+tzdata>=2024.2; sys_platform == "win32"  # Windows 的 Alembic 时区数据
+
+# ===== 缓存 / 队列 =====
+redis>=5.2,<6.0
+arq>=0.26,<0.30              # 异步任务队列（基于 Redis）
+
+# ===== AI 编排与模型调用 =====
+langgraph>=0.2.60,<0.4
+langchain-core>=0.3.20,<0.4
+httpx>=0.28,<1.0             # 异步 HTTP（禁止 requests）
+tenacity>=9.0,<10.0          # 重试与指数退避
+
+# ===== 视频合成 =====
+# FFmpeg 走系统可执行文件，不用 pip 包；此处仅做路径探测与参数拼装
+
+# ===== 工具 =====
+python-dotenv>=1.0,<2.0
+python-multipart>=0.0.12     # 文件上传
+orjson>=3.10,<4.0            # 高性能 JSON
+
+# ===== 质量门禁 =====
+pytest>=8.3,<9.0
+pytest-asyncio>=0.24,<0.30
+ruff>=0.8,<1.0
+mypy>=1.13,<2.0

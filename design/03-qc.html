@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>分镜流水线 · 03 质检与评估工作台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1920px;height:1080px;background:#0f0f1a;color:#e0e0e0;font:14px/1.5 "Microsoft YaHei","Segoe UI",sans-serif;overflow:hidden}
+.app{display:flex;height:100%}
+.side{width:216px;background:#141422;border-right:1px solid #23233a;padding:20px 12px;display:flex;flex-direction:column;gap:4px}
+.logo{display:flex;align-items:center;gap:10px;padding:4px 10px 20px}
+.logo .mk{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#4ecdc4,#7c6cf0);display:flex;align-items:center;justify-content:center;font-weight:700;color:#0f0f1a;font-size:15px}
+.logo b{font-size:15px}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;color:#a0a0b0}
+.nav.on{background:#252540;color:#e0e0e0;box-shadow:inset 3px 0 0 #4ecdc4}
+.nav svg{width:17px;height:17px;fill:currentColor;opacity:.9}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:62px;display:flex;align-items:center;gap:14px;padding:0 28px;border-bottom:1px solid #23233a;background:#12121e}
+.top h1{font-size:17px;font-weight:600}
+.crumb{color:#606070;font-size:12px}
+.spacer{flex:1}
+.btn{height:36px;padding:0 16px;border-radius:9px;border:1px solid #2a2a45;background:#1a1a2e;color:#e0e0e0;font-size:13px;display:flex;align-items:center;gap:6px}
+.btn.pri{background:#4ecdc4;border-color:#4ecdc4;color:#062725;font-weight:600}
+.btn.danger{border-color:#ff6b6b;color:#ff6b6b}
+.pill{height:23px;padding:0 10px;border-radius:12px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.pill.ok{background:rgba(61,220,151,.15);color:#3ddc97}
+.pill.warn{background:rgba(255,200,87,.15);color:#ffc857}
+.pill.bad{background:rgba(255,107,107,.15);color:#ff6b6b}
+.pill.acc{background:rgba(78,205,196,.15);color:#4ecdc4}
+.pill.vio{background:rgba(124,108,240,.15);color:#b0a4ff}
+.pill.mut{background:#252540;color:#a0a0b0}
+.content{flex:1;display:grid;grid-template-columns:300px 1fr 470px;gap:18px;padding:20px 28px;overflow:hidden;position:relative}
+.panel{background:#1a1a2e;border:1px solid #23233a;border-radius:14px;padding:16px;overflow:hidden;display:flex;flex-direction:column}
+.panel h2{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.panel h2 .n{color:#606070;font-weight:400;font-size:12px}
+.film{display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.f{display:grid;grid-template-columns:56px 1fr;gap:10px;align-items:center;padding:8px;border-radius:10px;border:1px solid #23233a}
+.f.on{background:#252540;border-color:#4ecdc4}
+.f .th{height:40px;border-radius:7px}
+.f b{font-size:12.5px;display:block}
+.f span{color:#606070;font-size:11px}
+.midbox{display:flex;flex-direction:column;gap:12px}
+.stage{flex:1;border-radius:12px;background:#151527;border:1px solid #23233a;position:relative;overflow:hidden}
+.stage i{position:absolute;inset:0;background:
+  radial-gradient(70% 60% at 42% 38%,rgba(120,190,220,.28),transparent 60%),
+  radial-gradient(50% 45% at 60% 62%,rgba(200,120,150,.22),transparent 60%),
+  linear-gradient(160deg,#22304a,#2b2340 60%,#1c2a33)}
+.stage .lbl{position:absolute;top:12px;left:14px;font-size:12px;color:#a0a0b0;background:rgba(15,15,26,.7);padding:3px 9px;border-radius:8px}
+.stage .mark{position:absolute;border:2px dashed #ff6b6b;border-radius:8px}
+.stage .mark::after{content:attr(data-t);position:absolute;top:-20px;left:-2px;font-size:11px;color:#ff6b6b;white-space:nowrap}
+.stage .okmark{position:absolute;border:2px solid rgba(61,220,151,.85);border-radius:8px}
+.stage .okmark::after{content:attr(data-t);position:absolute;top:-20px;left:-2px;font-size:11px;color:#3ddc97;white-space:nowrap}
+.dims{display:flex;flex-direction:column;gap:8px}
+.dim{display:grid;grid-template-columns:112px 1fr 46px;gap:12px;align-items:center;font-size:12.5px}
+.dim .k{color:#a0a0b0}
+.dim .bar{height:8px;background:#252540;border-radius:4px;overflow:hidden;position:relative}
+.dim .bar u{position:absolute;top:-3px;bottom:-3px;width:2px;background:#606070}
+.dim .bar i{display:block;height:100%;border-radius:4px}
+.dim b{text-align:right;font-weight:500}
+.lo{background:#3ddc97}.midbar{background:#ffc857}.hi{background:#ff6b6b}
+.trace{background:#151527;border:1px solid #23233a;border-radius:11px;padding:10px 14px;font-family:Consolas,monospace;font-size:12px;color:#a0a0b0;line-height:1.9}
+.trace em{color:#4ecdc4;font-style:normal}
+.right{gap:12px}
+.tabs{display:flex;gap:6px}
+.tab{height:30px;padding:0 14px;border-radius:8px;font-size:12.5px;color:#606070;border:1px solid transparent}
+.tab.on{background:#252540;color:#e0e0e0;border-color:#2a2a45}
+.conf{display:grid;grid-template-columns:auto 1fr 1fr;gap:6px;font-size:12.5px;align-items:center}
+.conf .h{color:#606070;text-align:center}
+.conf .c{height:52px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:600}
+.conf .rl{color:#a0a0b0}
+.c.tp{background:rgba(61,220,151,.14);color:#3ddc97}
+.c.fn{background:rgba(255,107,107,.16);color:#ff6b6b}
+.c.fp{background:rgba(255,200,87,.14);color:#ffc857}
+.c.tn{background:rgba(61,220,151,.10);color:#3ddc97}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.kpi{background:#151527;border:1px solid #23233a;border-radius:10px;padding:10px 12px}
+.kpi .k{font-size:11.5px;color:#606070}
+.kpi .v{font-size:20px;font-weight:600;margin-top:2px}
+.kpi .v small{font-size:12px;color:#606070;font-weight:400}
+.gold{display:flex;flex-direction:column;gap:7px;overflow:hidden}
+.g{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;font-size:12.5px}
+.g .th{height:34px;border-radius:7px}
+.g .m{color:#a0a0b0}
+.wm{position:absolute;right:28px;bottom:12px;color:#3a3a55;font-size:11px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo"><span class="mk">镜</span><b>分镜流水线</b></div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg>项目</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6z"/></svg>角色与锚定</div>
+    <div class="nav on"><svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.5 9.4-8 11-4.5-1.6-8-6-8-11V5z"/></svg>质检与评估</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M12 4a9 9 0 0 1 9 9h-9z" opacity=".5"/><path d="M10 4.2A9 9 0 1 0 21 15h-9z"/></svg>预算与成本</div>
+  </aside>
+  <div class="main">
+    <div class="top">
+      <span class="crumb">《山海拾遗》S02-04 /</span><h1>质检与评估工作台</h1>
+      <div class="spacer"></div>
+      <span class="pill vio">视觉模型 qwen-vl-max（免费额度）</span>
+      <button class="btn">换种子重抽</button>
+      <button class="btn danger">拦截（合规）</button>
+      <button class="btn pri">通过并进入关卡 C</button>
+    </div>
+    <div class="content">
+      <div class="panel">
+        <h2>抽卡序列 <span class="n">shot S02-04 · 4 次尝试</span></h2>
+        <div class="film">
+          <div class="f"><div class="th" style="background:linear-gradient(135deg,#3a2a3a,#2a3a4a)"></div><div><b>attempt #1 <span class="pill bad">reject</span></b><span>五官畸形 0.82 · ¥0.22</span></div></div>
+          <div class="f"><div class="th" style="background:linear-gradient(135deg,#2a3a4a,#3a4a5a)"></div><div><b>attempt #2 <span class="pill bad">reject</span></b><span>人设漂移 0.71 · ¥0.22</span></div></div>
+          <div class="f"><div class="th" style="background:linear-gradient(135deg,#33415a,#40334f)"></div><div><b>attempt #3 <span class="pill warn">repairable</span></b><span>色彩断层 0.55 → 局部重绘</span></div></div>
+          <div class="f on"><div class="th" style="background:linear-gradient(135deg,#2b3a6b,#3f6f8a)"></div><div><b>attempt #4 <span class="pill ok">pass</span></b><span>五维全过 · conf 0.86 · ¥0.22</span></div></div>
+        </div>
+        <div class="trace" style="margin-top:auto">attempt#4 幂等键 <em>sha256(shot|4|jimeng-3.0|seed88213)</em><br>anchor_version <em>v3</em> · 耗时 <em>6.4s</em> · 供应商 <em>jimeng</em></div>
+      </div>
+      <div class="panel midbox">
+        <div class="stage">
+          <i></i>
+          <span class="lbl">待判定帧 · S02-04 中景 · 构图：主体居中偏左</span>
+          <span class="mark" data-t="漂移：发色偏棕（阈值 0.40，实测 0.78）" style="left:41%;top:26%;width:15%;height:16%"></span>
+          <span class="okmark" data-t="构图合规" style="left:18%;top:20%;width:60%;height:62%"></span>
+        </div>
+        <h2 style="margin:0">五维判定 <span class="n">本地阈值覆盖模型自报 ok</span></h2>
+        <div class="dims">
+          <div class="dim"><span class="k">五官畸形</span><div class="bar"><i class="lo" style="width:12%"></i><u style="left:40%"></u></div><b>0.12</b></div>
+          <div class="dim"><span class="k">人设漂移</span><div class="bar"><i class="hi" style="width:78%"></i><u style="left:40%"></u></div><b>0.78</b></div>
+          <div class="dim"><span class="k">色彩断层</span><div class="bar"><i class="midbar" style="width:46%"></i><u style="left:40%"></u></div><b>0.46</b></div>
+          <div class="dim"><span class="k">构图合规</span><div class="bar"><i class="lo" style="width:18%"></i><u style="left:40%"></u></div><b>0.18</b></div>
+          <div class="dim"><span class="k">内容合规</span><div class="bar"><i class="lo" style="width:4%"></i><u style="left:40%"></u></div><b>0.04</b></div>
+        </div>
+        <div class="trace">verdict=<em>repairable</em> · suggestion=<em>strengthen_anchor</em> · drifted_fields=[<em>发色</em>,<em>眼距</em>]<br>模型自报 ok=true 已被本地阈值覆盖为 false（分数 0.78 ≥ 0.40）</div>
+      </div>
+      <div class="panel right">
+        <div class="tabs"><span class="tab on">校准指标</span><span class="tab">黄金测试集 96</span><span class="tab">错误分类</span><span class="tab">人工复核</span></div>
+        <div class="conf">
+          <span></span><span class="h">人工 pass</span><span class="h">人工 reject</span>
+          <span class="rl">机器 pass</span><span class="c tp">61</span><span class="c fn">4 ← 漏放</span>
+          <span class="rl">机器 reject</span><span class="c fp">7 ← 误杀</span><span class="c tn">24</span>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="k">召回率（合格帧识别）</div><div class="v">93.8%</div></div>
+          <div class="kpi"><div class="k">误杀率</div><div class="v">22.6%</div></div>
+          <div class="kpi"><div class="k">准确率</div><div class="v">88.5%</div></div>
+          <div class="kpi"><div class="k">漏放成本</div><div class="v">¥5.60<small> 4×1.4</small></div></div>
+          <div class="kpi"><div class="k">误杀成本</div><div class="v">¥1.75<small> 7×0.25</small></div></div>
+          <div class="kpi"><div class="k">拦截节省</div><div class="v">¥41.30</div></div>
+        </div>
+        <h2 style="margin:0">黄金测试集分布 <span class="n">标注均衡性检查</span></h2>
+        <div class="gold">
+          <div class="g"><div class="th" style="background:linear-gradient(135deg,#2b6b52,#3f8a6f)"></div><span class="m">合格帧</span><span class="pill ok">29 · 30%</span></div>
+          <div class="g"><div class="th" style="background:linear-gradient(135deg,#6b2b4f,#8a3f5f)"></div><span class="m">人设漂移</span><span class="pill bad">24 · 25%</span></div>
+          <div class="g"><div class="th" style="background:linear-gradient(135deg,#6b4a2b,#8a6f3f)"></div><span class="m">五官畸形</span><span class="pill warn">19 · 20%</span></div>
+          <div class="g"><div class="th" style="background:linear-gradient(135deg,#2b3a6b,#3f5f8a)"></div><span class="m">色彩断层</span><span class="pill mut">10 · 10%</span></div>
+          <div class="g"><div class="th" style="background:linear-gradient(135deg,#3a3a3a,#4a4a4a)"></div><span class="m">构图 / 合规</span><span class="pill mut">14 · 15%</span></div>
+        </div>
+      </div>
+      <div class="wm">分镜流水线 · 设计稿 v1 · PAGE 03 / 质检与评估工作台 · 2026-09-24</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

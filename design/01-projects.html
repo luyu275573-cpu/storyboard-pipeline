@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>分镜流水线 · 01 项目管理主流程</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1920px;height:1080px;background:#0f0f1a;color:#e0e0e0;font:14px/1.5 "Microsoft YaHei","Segoe UI",sans-serif;overflow:hidden}
+.app{display:flex;height:100%}
+.side{width:216px;background:#141422;border-right:1px solid #23233a;padding:20px 12px;display:flex;flex-direction:column;gap:4px}
+.logo{display:flex;align-items:center;gap:10px;padding:4px 10px 20px}
+.logo .mk{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#4ecdc4,#7c6cf0);display:flex;align-items:center;justify-content:center;font-weight:700;color:#0f0f1a;font-size:15px}
+.logo b{font-size:15px;letter-spacing:.5px}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;color:#a0a0b0}
+.nav.on{background:#252540;color:#e0e0e0;box-shadow:inset 3px 0 0 #4ecdc4}
+.nav svg{width:17px;height:17px;fill:currentColor;opacity:.9}
+.side .foot{margin-top:auto;color:#606070;font-size:11px;padding:10px 12px;line-height:1.7}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:62px;display:flex;align-items:center;gap:14px;padding:0 28px;border-bottom:1px solid #23233a;background:#12121e}
+.top h1{font-size:17px;font-weight:600}
+.crumb{color:#606070;font-size:12px}
+.spacer{flex:1}
+.search{width:330px;height:36px;background:#1a1a2e;border:1px solid #2a2a45;border-radius:9px;color:#606070;display:flex;align-items:center;padding:0 12px;gap:8px;font-size:13px}
+.btn{height:36px;padding:0 16px;border-radius:9px;border:1px solid #2a2a45;background:#1a1a2e;color:#e0e0e0;font-size:13px;display:flex;align-items:center;gap:6px}
+.btn.pri{background:#4ecdc4;border-color:#4ecdc4;color:#062725;font-weight:600}
+.avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#7c6cf0,#4ecdc4);display:flex;align-items:center;justify-content:center;font-size:13px;color:#0f0f1a;font-weight:600}
+.content{flex:1;padding:22px 28px;overflow:hidden;position:relative}
+.chips{display:flex;gap:8px;align-items:center}
+.chip{height:26px;padding:0 12px;border-radius:13px;background:#1a1a2e;border:1px solid #2a2a45;color:#a0a0b0;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.chip.on{border-color:#4ecdc4;color:#4ecdc4}
+.chip .dot{width:6px;height:6px;border-radius:50%}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.stat{background:#1a1a2e;border:1px solid #23233a;border-radius:12px;padding:14px 18px}
+.stat .k{color:#a0a0b0;font-size:12px}
+.stat .v{font-size:25px;font-weight:600;margin-top:4px}
+.stat .v small{font-size:13px;color:#606070;font-weight:400}
+.stat .d{font-size:12px;margin-top:4px;color:#3ddc97}
+.stat .d.mut{color:#606070}
+.sect{display:flex;align-items:center;gap:12px;margin:20px 0 14px}
+.sect h2{font-size:15px;font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.card{background:#1a1a2e;border:1px solid #23233a;border-radius:14px;overflow:hidden}
+.card.hov{border-color:#4ecdc4;box-shadow:0 0 0 1px #4ecdc4,0 10px 34px rgba(78,205,196,.13)}
+.card.new{border-style:dashed;border-color:#2a2a45;display:flex;align-items:center;justify-content:center;height:262px;color:#606070;flex-direction:column;gap:10px}
+.card.new .plus{width:40px;height:40px;border-radius:12px;border:1px dashed #4a4a6a;display:flex;align-items:center;justify-content:center;font-size:20px;color:#4ecdc4}
+.cover{height:132px;position:relative}
+.cover::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(115deg,rgba(255,255,255,.03) 0 2px,transparent 2px 9px)}
+.cover b{font-size:46px;color:rgba(255,255,255,.13);position:absolute;right:16px;top:6px;font-weight:700;z-index:1}
+.g1{background:radial-gradient(120% 90% at 20% 10%,#3d3a6b 0%,transparent 60%),linear-gradient(135deg,#232345,#1b3a4a)}
+.g2{background:radial-gradient(120% 90% at 80% 0%,#5a3a5f 0%,transparent 55%),linear-gradient(135deg,#2a2340,#3a2b33)}
+.g3{background:radial-gradient(100% 80% at 50% 100%,#204a44 0%,transparent 60%),linear-gradient(135deg,#1e2a3a,#25324a)}
+.g4{background:radial-gradient(120% 90% at 30% 100%,#4a3a20 0%,transparent 55%),linear-gradient(135deg,#2a2a3a,#3a3040)}
+.g5{background:linear-gradient(135deg,#1f2f4a,#2a3f55)}
+.tag{position:absolute;top:10px;right:10px;z-index:2}
+.pill{height:23px;padding:0 10px;border-radius:12px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.pill.ok{background:rgba(61,220,151,.15);color:#3ddc97}
+.pill.warn{background:rgba(255,200,87,.15);color:#ffc857}
+.pill.info{background:rgba(90,169,255,.15);color:#5aa9ff}
+.pill.bad{background:rgba(255,107,107,.15);color:#ff6b6b}
+.pill.acc{background:rgba(78,205,196,.15);color:#4ecdc4}
+.cbody{padding:13px 16px 15px}
+.cbody h3{font-size:15px;font-weight:600}
+.cbody .sub{color:#606070;font-size:12px;margin-top:3px}
+.prow{display:flex;justify-content:space-between;font-size:12px;color:#a0a0b0;margin-top:12px}
+.prow b{color:#e0e0e0;font-weight:500}
+.pbar{height:6px;background:#252540;border-radius:3px;margin-top:6px;overflow:hidden}
+.pbar i{display:block;height:100%;background:linear-gradient(90deg,#4ecdc4,#7c6cf0);border-radius:3px}
+.cfoot{display:flex;align-items:center;justify-content:space-between;margin-top:11px;color:#606070;font-size:12px}
+.wm{position:absolute;right:28px;bottom:14px;color:#3a3a55;font-size:11px;letter-spacing:.5px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo"><span class="mk">镜</span><b>分镜流水线</b></div>
+    <div class="nav on"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg>项目</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6z"/></svg>角色与锚定</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M12 2l8 3v6c0 5-3.5 9.4-8 11-4.5-1.6-8-6-8-11V5z"/><path d="M9 12l2.2 2.2L15.5 10" fill="none" stroke="#141422" stroke-width="2"/></svg>质检与评估</div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M12 4a9 9 0 0 1 9 9h-9z" opacity=".5"/><path d="M10 4.2A9 9 0 1 0 21 15h-9z"/></svg>预算与成本</div>
+    <div class="foot">run #7 · worker 在线<br>预算熔断：未触发</div>
+  </aside>
+  <div class="main">
+    <div class="top">
+      <span class="crumb">工作台 /</span><h1>项目管理</h1>
+      <div class="spacer"></div>
+      <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#606070" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>搜索项目、角色或镜头编号…</div>
+      <div class="chip"><span class="dot" style="background:#3ddc97"></span>预算 ¥86.40 / ¥200.00</div>
+      <button class="btn pri">＋ 新建项目</button>
+      <div class="avatar">彭</div>
+    </div>
+    <div class="content">
+      <div class="grid4">
+        <div class="stat"><div class="k">进行中项目</div><div class="v">3</div><div class="d mut">待终审 1 · 已暂停 1</div></div>
+        <div class="stat"><div class="k">本周抽卡次数</div><div class="v">486 <small>次</small></div><div class="d">↑ 12.4% 较上周</div></div>
+        <div class="stat"><div class="k">图像层一次过率</div><div class="v">34.2%</div><div class="d">盲抽基线 15.0%</div></div>
+        <div class="stat"><div class="k">本月花费</div><div class="v">¥86.40</div><div class="d mut">占预算 43.2%</div></div>
+      </div>
+      <div class="sect">
+        <h2>我的项目</h2>
+        <div class="chips">
+          <span class="chip on">全部 6</span><span class="chip">生产中 2</span><span class="chip">待终审 1</span><span class="chip">已暂停 1</span><span class="chip">已完成 1</span>
+        </div>
+      </div>
+      <div class="cards">
+        <div class="card hov">
+          <div class="cover g1"><b>山</b><span class="tag pill ok">● 生产中</span></div>
+          <div class="cbody">
+            <h3>《山海拾遗》第一季</h3>
+            <div class="sub">12 集 · 2 主角 · 画风：日系厚涂</div>
+            <div class="prow"><span>镜头进度</span><b>12 / 20</b></div>
+            <div class="pbar"><i style="width:60%"></i></div>
+            <div class="cfoot"><span>2 小时前更新</span><span class="pill acc">¥52.10</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cover g2"><b>夜</b><span class="tag pill warn">● 待终审</span></div>
+          <div class="cbody">
+            <h3>《夜市灯火》试播集</h3>
+            <div class="sub">1 集 · 3 主角 · 画风：国潮暖色</div>
+            <div class="prow"><span>关卡 C 待放行</span><b>8 / 8 帧</b></div>
+            <div class="pbar"><i style="width:100%"></i></div>
+            <div class="cfoot"><span>昨天 21:14</span><span class="pill acc">¥18.60</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cover g3"><b>纸</b><span class="tag pill bad">● 已暂停</span></div>
+          <div class="cbody">
+            <h3>《纸鸢》角色一致性测试</h3>
+            <div class="sub">镜头 S02-04 重试 6 次超限 · 挂起待人工</div>
+            <div class="prow"><span>镜头进度</span><b>5 / 14</b></div>
+            <div class="pbar"><i style="width:36%"></i></div>
+            <div class="cfoot"><span>3 天前</span><span class="pill acc">¥9.30</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cover g4"><b>山</b><span class="tag pill info">● 已完成</span></div>
+          <div class="cbody">
+            <h3>《山海拾遗》前传 · 概念验证</h3>
+            <div class="sub">成片 42s · 导出 1080P · 已入 showcase</div>
+            <div class="prow"><span>镜头进度</span><b>10 / 10</b></div>
+            <div class="pbar"><i style="width:100%"></i></div>
+            <div class="cfoot"><span>09-18 完成</span><span class="pill acc">¥6.40</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cover g5"><b>雨</b><span class="tag pill ok">● 生产中</span></div>
+          <div class="cbody">
+            <h3>《雨巷》单镜头实验</h3>
+            <div class="sub">验证 Vidu 多主体同框绑定</div>
+            <div class="prow"><span>镜头进度</span><b>3 / 16</b></div>
+            <div class="pbar"><i style="width:19%"></i></div>
+            <div class="cfoot"><span>今天 09:02</span><span class="pill acc">¥2.75</span></div>
+          </div>
+        </div>
+        <div class="card new"><div class="plus">＋</div><span>新建项目</span></div>
+      </div>
+      <div class="wm">分镜流水线 · 设计稿 v1 · PAGE 01 / 项目管理主流程 · 2026-09-24</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
