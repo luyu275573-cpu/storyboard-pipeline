@@ -7,6 +7,7 @@ import VideoPanel from './VideoPanel'
 
 type Editor = { type: 'scene'; scene?: Scene } | { type: 'shot'; scene: Scene; shot?: Shot } | { type: 'review' } | { type: 'delete'; scene: Scene; shot?: Shot } | null
 type Compliance = { scene: Scene; shot: Shot; attempt: Attempt; report: QCReport }
+type ManualQC = { scene: Scene; shot: Shot; attempt: Attempt }
 
 export default function Storyboard({ project, run, version, refresh }: {
   project: Project; run: Run; version: number; refresh: () => void
@@ -20,6 +21,7 @@ export default function Storyboard({ project, run, version, refresh }: {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [compliance, setCompliance] = useState<Compliance | null>(null)
+  const [manualQc, setManualQc] = useState<ManualQC | null>(null)
   const [reviewer, setReviewer] = useState('')
   const [reviewNote, setReviewNote] = useState('')
   useEffect(() => {
@@ -53,6 +55,16 @@ export default function Storyboard({ project, run, version, refresh }: {
     } catch (err) { setError((err as Error).message) }
     finally { setBusy(false) }
   }
+  async function openManualQC(scene: Scene, shot: Shot) {
+    setBusy(true); setError('')
+    try {
+      const attempts = await api<Attempt[]>(`/shots/${shot.id}/attempts`)
+      const attempt = [...attempts].reverse().find(item => item.stage === 'image' && item.status === 'succeeded' && item.asset_path)
+      if (!attempt) throw new Error('该镜头还没有可人工审核的关键帧')
+      setReviewer(''); setReviewNote(''); setManualQc({ scene, shot, attempt })
+    } catch (err) { setError((err as Error).message) }
+    finally { setBusy(false) }
+  }
   async function submitCompliance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!compliance) return
@@ -63,6 +75,22 @@ export default function Storyboard({ project, run, version, refresh }: {
         method: 'POST', body: JSON.stringify({ status, reviewer, note: reviewNote, run_id: run.id, attempt_id: compliance.attempt.id, expected_version: compliance.shot.version }),
       })
       setCompliance(null); setNotice(status === 'approved' ? 'C 审核已通过，关键帧已锁定。' : 'C 审核已驳回，该镜头已挂起。'); refresh()
+    } catch (err) { setError((err as Error).message) }
+    finally { setBusy(false) }
+  }
+  async function submitManualQC(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!manualQc) return
+    const status = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter).get('status')
+    setBusy(true); setError('')
+    try {
+      await api(`/shots/${manualQc.shot.id}/qc/manual`, {
+        method: 'POST',
+        body: JSON.stringify({ status, reviewer, note: reviewNote, run_id: run.id, attempt_id: manualQc.attempt.id, expected_version: manualQc.shot.version }),
+      })
+      setManualQc(null)
+      setNotice(status === 'pass' ? '人工 QC 已通过，请继续完成 C 图像终审。' : '人工 QC 已驳回，该镜头保持挂起。')
+      refresh()
     } catch (err) { setError((err as Error).message) }
     finally { setBusy(false) }
   }
@@ -140,7 +168,7 @@ export default function Storyboard({ project, run, version, refresh }: {
         <div className="shot-card-heading"><strong>{scene.seq}-{String(shot.seq).padStart(2, '0')}</strong><span className="pill">{shot.shot_size}</span><span>{shot.duration_ms / 1000}s</span></div>
         {shot.locked_attempt_id ? <img className="review-image" src={`/api/v1/shots/attempts/${shot.locked_attempt_id}/file`} alt="已锁定关键帧" /> : <div className="shot-placeholder"><span>{shot.shot_size}</span><small>待生成关键帧</small></div>}
         <div className="shot-card-body"><h3>{shot.action_text}</h3><p>{shot.composition}</p><p className="muted">{shot.camera_move || '固定镜头'} · {shot.character_ids.map(id => data.characters.find(c => c.id === id)?.name).join('、') || '纯场景'}</p>{shot.dialogue && <blockquote>{shot.dialogue}</blockquote>}
-          <div className="card-footer"><span>镜头 v{shot.version} · {shot.status}</span><span className="board-actions"><button className="text-button" disabled={busy || data.gate?.status !== 'approved'} onClick={() => void perform(async () => { await api(`/shots/${shot.id}/render`, { method: 'POST', body: JSON.stringify({ n: 1, stage: 'image' }) }); setNotice('关键帧任务已进入队列，稍后刷新查看结果。') })}>生成关键帧</button><button className="text-button" disabled={busy || shot.status !== 'review'} onClick={() => void openCompliance(scene, shot)}>C 审核</button><button className="text-button" onClick={() => open({ type: 'shot', scene, shot })}>编辑镜头</button><button className="text-button" onClick={() => open({ type: 'delete', scene, shot })}>删除</button></span></div>
+          <div className="card-footer"><span>镜头 v{shot.version} · {shot.status}</span><span className="board-actions"><button className="text-button" disabled={busy || data.gate?.status !== 'approved'} onClick={() => void perform(async () => { await api(`/shots/${shot.id}/render`, { method: 'POST', body: JSON.stringify({ n: 1, stage: 'image' }) }); setNotice('关键帧任务已进入队列，稍后刷新查看结果。') })}>生成关键帧</button>{shot.status === 'suspended' && <button className="text-button" disabled={busy} onClick={() => void openManualQC(scene, shot)}>人工 QC</button>}<button className="text-button" disabled={busy || shot.status !== 'review'} onClick={() => void openCompliance(scene, shot)}>C 审核</button><button className="text-button" onClick={() => open({ type: 'shot', scene, shot })}>编辑镜头</button><button className="text-button" onClick={() => open({ type: 'delete', scene, shot })}>删除</button></span></div>
         </div>
       </article>)}</div>
       {!data.shots.some(s => s.scene_id === scene.id) && <p className="reference-empty">本场景还没有镜头。添加第一个镜头后即可继续编排。</p>}
@@ -185,6 +213,16 @@ export default function Storyboard({ project, run, version, refresh }: {
         <label>审核人<input required maxLength={80} value={reviewer} onChange={event => setReviewer(event.target.value)} /></label>
         <label>审核意见<textarea required rows={3} maxLength={2000} value={reviewNote} onChange={event => setReviewNote(event.target.value)} /></label>
       </div><div className="dialog-actions"><button className="button" type="submit" name="status" value="rejected" disabled={busy}>驳回并挂起</button><button className="button primary" type="submit" name="status" value="approved" disabled={busy || compliance.report.verdict !== 'pass'}>通过并锁定</button></div></form>
+    </Dialog>}
+    {manualQc && <Dialog title={`人工 QC · ${manualQc.scene.seq}-${manualQc.shot.seq}`} busy={busy} close={() => setManualQc(null)}>
+      {error && <p className="error-banner" role="alert">{error}</p>}
+      <form onSubmit={submitManualQC}><div className="form-body">
+        <img className="review-image" src={`/api/v1/shots/attempts/${manualQc.attempt.id}/file`} alt={`镜头 ${manualQc.scene.seq}-${manualQc.shot.seq} 待审核关键帧`} />
+        <p className="warning-note">视觉模型结果未知。请根据关键帧人工判断，系统不会重新发送原视觉请求。</p>
+        <p className="muted">关键帧尝试 #{manualQc.attempt.attempt_no} · {manualQc.attempt.model}</p>
+        <label>审核人<input required maxLength={80} value={reviewer} onChange={event => setReviewer(event.target.value)} /></label>
+        <label>审核意见<textarea required rows={3} maxLength={2000} value={reviewNote} onChange={event => setReviewNote(event.target.value)} /></label>
+      </div><div className="dialog-actions"><button className="button" type="submit" name="status" value="reject" disabled={busy}>驳回并挂起</button><button className="button primary" type="submit" name="status" value="pass" disabled={busy}>通过并进入 C 审核</button></div></form>
     </Dialog>}
   </>
 }

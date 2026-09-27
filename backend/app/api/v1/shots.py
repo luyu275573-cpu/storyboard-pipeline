@@ -16,9 +16,10 @@ from app.core.db import get_db
 from app.core.errors import AppError, ConflictError, GatePendingError, NotFoundError
 from app.core.response import ok
 from app.models.domain import Character, PipelineRun, ReviewGate, Scene, Shot
-from app.models.tracking import Export, QCReport, RenderAttempt
+from app.models.tracking import ApiCallLog, Export, ProviderRequest, QCReport, RenderAttempt
 from app.schemas import (
     AttemptOut,
+    ManualQCDecision,
     MediaDecision,
     RenderRequest,
     ShotCreate,
@@ -176,6 +177,91 @@ async def list_attempts(shot_id: str, db: AsyncSession = Depends(get_db)) -> dic
         select(RenderAttempt).where(RenderAttempt.shot_id == shot_id).order_by(RenderAttempt.attempt_no)
     )
     return ok([AttemptOut.model_validate(row).model_dump(mode="json") for row in rows])
+
+
+@router.post("/{shot_id}/qc/manual", summary="视觉模型未知后的人工 QC")
+async def manual_qc(
+    shot_id: str, body: ManualQCDecision, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """接管供应商视觉质检的未知结果，不重发请求，也不伪造模型结论。"""
+    from app.services.video import current_context
+
+    _, shot, run = await current_context(db, shot_id)
+    if body.run_id != run.id:
+        raise ConflictError("运行记录与镜头不匹配")
+    if shot.version != body.expected_version:
+        raise ConflictError("镜头版本已变化，请刷新后重试")
+
+    attempt = await db.scalar(
+        select(RenderAttempt)
+        .where(
+            RenderAttempt.id == body.attempt_id,
+            RenderAttempt.shot_id == shot.id,
+            RenderAttempt.stage == "image",
+        )
+        .with_for_update()
+    )
+    if attempt is None:
+        raise NotFoundError("该镜头的关键帧尝试不存在")
+    if attempt.status != "succeeded" or not attempt.asset_path:
+        raise ConflictError("只能审核已成功生成的关键帧")
+    if await db.scalar(select(QCReport.id).where(QCReport.attempt_id == attempt.id).limit(1)):
+        raise ConflictError("该关键帧已有质检报告，不能重复人工接管")
+
+    unknown_call = await db.scalar(
+        select(ApiCallLog)
+        .join(ProviderRequest, ApiCallLog.request_id == ProviderRequest.id)
+        .where(
+            ApiCallLog.attempt_id == attempt.id,
+            ApiCallLog.kind == "vision",
+            ApiCallLog.status == "unknown",
+            ProviderRequest.id == ApiCallLog.request_id,
+            ProviderRequest.project_id == run.project_id,
+            ProviderRequest.run_id == run.id,
+            ProviderRequest.status == "unknown",
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    if unknown_call is None:
+        raise ConflictError("该关键帧没有可接管的视觉模型未知请求")
+
+    passed = body.status == "pass"
+    report = QCReport(
+        attempt_id=attempt.id,
+        model="manual-after-provider-unknown",
+        verdict=body.status,
+        dimensions={
+            "manual_review": {
+                "score": 0.0 if passed else 1.0,
+                "ok": passed,
+                "note": body.note,
+            }
+        },
+        severity=None if passed else "high",
+        suggestion=None if passed else "redraw",
+        confidence=1.0,
+        reasoning="人工接管视觉模型未知结果；未重新发送模型请求。",
+        raw_response={
+            "source": "manual_after_provider_unknown",
+            "unknown_call_id": unknown_call.id,
+            "unknown_request_id": unknown_call.request_id,
+            "reviewer": body.reviewer,
+        },
+        human_verdict=body.status,
+        human_note=body.note,
+        reviewed_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    db.add(report)
+    shot.status = "review" if passed else "suspended"
+    await db.flush()
+    return ok({
+        "shot_id": shot.id,
+        "attempt_id": attempt.id,
+        "report_id": report.id,
+        "status": shot.status,
+        "reserved_request_id": unknown_call.request_id,
+    })
 
 
 @router.get("/attempts/{attempt_id}/file", summary="读取生成关键帧")

@@ -379,6 +379,16 @@ class MediaDecision(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
 
 
+class ManualQCDecision(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    run_id: str = Field(min_length=1, max_length=36)
+    attempt_id: str = Field(min_length=1, max_length=36)
+    expected_version: int = Field(ge=1)
+    status: Literal["pass", "reject"]
+    reviewer: str = Field(min_length=1, max_length=80)
+    note: str = Field(min_length=1, max_length=2000)
+
+
 class GateOut(ORMModel):
     id: str
     run_id: str
