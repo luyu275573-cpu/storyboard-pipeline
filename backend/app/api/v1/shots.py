@@ -171,6 +171,18 @@ async def list_attempts(shot_id: str, db: AsyncSession = Depends(get_db)) -> dic
     return ok([AttemptOut.model_validate(row).model_dump(mode="json") for row in rows])
 
 
+@router.get("/attempts/{attempt_id}/file", summary="读取生成关键帧")
+async def get_attempt_file(attempt_id: str, db: AsyncSession = Depends(get_db)) -> FileResponse:
+    attempt = await db.get(RenderAttempt, attempt_id)
+    if attempt is None or attempt.status != "succeeded" or not attempt.asset_path:
+        raise NotFoundError("生成关键帧不存在")
+    root = settings.storage_path.resolve()
+    target = (root / attempt.asset_path).resolve()
+    if not target.is_relative_to(root / "generated") or not target.is_file():
+        raise NotFoundError("生成关键帧不存在")
+    return FileResponse(target, media_type="image/png", headers={"X-Content-Type-Options": "nosniff"})
+
+
 @router.post("/{shot_id}/gate/compliance", summary="人机关卡 C：先审后播合规终审")
 async def compliance_gate(
     shot_id: str, body: GateDecision, db: AsyncSession = Depends(get_db)

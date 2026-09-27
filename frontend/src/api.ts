@@ -63,6 +63,16 @@ export type Shot = {
   duration_ms: number; negative_prompt: string | null; version: number; status: string; locked_attempt_id?: string | null
 }
 export type ExportResult = { id: string; status: string; output_path: string; duration_ms: number; shots: number }
+export type Attempt = {
+  id: string; shot_id: string; attempt_no: number; stage: string; provider: string; model: string;
+  seed: string | null; asset_path: string | null; status: string; error_code: string | null;
+  cost_cents: number; latency_ms: number | null; created_at: string
+}
+export type QCReport = {
+  id: string; attempt_id: string; model: string; verdict: string; dimensions: Record<string, { score: number; ok: boolean; note: string }>;
+  severity: string | null; suggestion: string | null; confidence: number | null; reasoning: string | null;
+  human_verdict: string | null; human_note: string | null; reviewed_at: string | null; created_at: string
+}
 export type Board = {
   project_id: string; run_id: string; storyboard_version: number; characters: Character[];
   references: Reference[]; scenes: Scene[]; shots: Shot[]; blockers: string[]; characters_ready: boolean;

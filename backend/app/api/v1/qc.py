@@ -5,13 +5,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.schemas import GoldenLabelCreate, QCInspectRequest, QCReviewRequest
+from app.core.errors import AppError, NotFoundError
+from app.core.response import ok
+from app.models.tracking import QCReport
+from app.schemas import GoldenLabelCreate, QCInspectRequest, QCReportOut, QCReviewRequest
 
 router = APIRouter()
 
@@ -43,8 +48,15 @@ async def inspect(body: QCInspectRequest, db: AsyncSession = Depends(get_db)) ->
 
 @router.get("/reports/{attempt_id}", summary="查质检报告")
 async def get_report(attempt_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl): 返回 QCReportOut。查不到抛 NotFoundError。"""
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    report = await db.scalar(
+        select(QCReport)
+        .where(QCReport.attempt_id == attempt_id)
+        .order_by(QCReport.created_at.desc(), QCReport.id.desc())
+        .limit(1)
+    )
+    if report is None:
+        raise NotFoundError("该关键帧尚无质检报告")
+    return ok(QCReportOut.model_validate(report).model_dump(mode="json"))
 
 
 @router.post("/reports/{report_id}/review", summary="人工复核质检结论")
@@ -59,7 +71,16 @@ async def review_report(
 
     没有人工复核，"质检准确率 X%"就是自说自话。
     """
-    raise NotImplementedError("TODO(impl): 由 Codex 实现")
+    if body.human_verdict not in {"pass", "reject"}:
+        raise AppError("人工质检结论只能是 pass 或 reject")
+    report = await db.scalar(select(QCReport).where(QCReport.id == report_id).with_for_update())
+    if report is None:
+        raise NotFoundError("质检报告不存在")
+    report.human_verdict = body.human_verdict
+    report.human_note = body.human_note
+    report.reviewed_at = datetime.now(UTC).replace(tzinfo=None)
+    await db.flush()
+    return ok(QCReportOut.model_validate(report).model_dump(mode="json"))
 
 
 # ==================== 黄金测试集 ====================
