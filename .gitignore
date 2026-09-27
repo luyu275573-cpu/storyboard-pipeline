@@ -69,6 +69,8 @@ storage/refs/*
 !storage/refs/.gitkeep
 storage/renders/*
 !storage/renders/.gitkeep
+storage/generated/*
+!storage/generated/.gitkeep
 storage/exports/*
 !storage/exports/.gitkeep
 

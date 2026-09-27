@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import logging
 import mimetypes
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from app.core.errors import AppError, ProviderRejectedError
 from app.models.enums import ProviderKind
 from app.models.tracking import ApiCallLog
 from app.providers.base import BaseProvider, ProviderResult
+
+logger = logging.getLogger(__name__)
 
 
 async def _data_uri(path: str) -> str:
@@ -69,13 +72,28 @@ class SiliconFlowImageProvider(BaseProvider):
         }
 
     async def _payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        request = {key: value for key, value in payload.items() if key != "image_paths"}
+        # Provider 请求只保留硅基流动图像接口字段；锚定等级、重试字段和 n
+        # 已写入 RenderAttempt.request_payload，不应泄漏到供应商 schema。
+        allowed = {
+            "model",
+            "prompt",
+            "image_size",
+            "num_inference_steps",
+            "guidance_scale",
+            "true_cfg_scale",
+            "enable_safety_checker",
+        }
+        request = {key: value for key, value in payload.items() if key in allowed}
         paths = payload.get("image_paths") or []
         if paths:
             if not isinstance(paths, list) or len(paths) > 3:
                 raise AppError("参考图最多发送 3 张")
             for index, path in enumerate(paths):
                 request["image" if index == 0 else f"image{index + 1}"] = await _data_uri(str(path))
+        if isinstance(payload.get("seed"), str):
+            request["seed"] = int(hashlib.sha256(payload["seed"].encode()).hexdigest()[:8], 16)
+        elif isinstance(payload.get("seed"), int):
+            request["seed"] = payload["seed"]
         request.setdefault("model", settings.siliconflow_image_model)
         request.setdefault("prompt", "")
         return request
@@ -89,6 +107,11 @@ class SiliconFlowImageProvider(BaseProvider):
             json=await self._payload(payload),
         )
         if response.status_code in {400, 401, 403, 404, 429}:
+            logger.warning(
+                "硅基流动图像请求被拒绝 status=%s body=%s",
+                response.status_code,
+                response.text[:500],
+            )
             raise ProviderRejectedError("硅基流动图片请求未受理", detail={"status": response.status_code})
         response.raise_for_status()
         body = response.json()
