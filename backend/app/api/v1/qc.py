@@ -56,7 +56,14 @@ async def get_report(attempt_id: str, db: AsyncSession = Depends(get_db)) -> dic
     )
     if report is None:
         raise NotFoundError("该关键帧尚无质检报告")
-    return ok(QCReportOut.model_validate(report).model_dump(mode="json"))
+    data = QCReportOut.model_validate(report).model_dump(mode="json")
+    data["model_verdict"] = report.raw_response.get("verdict")
+    data["decision_conflict"] = (
+        data["model_verdict"] not in {None, report.verdict}
+        or any(item.get("ok") is False for item in report.raw_response.get("dimensions", {}).values()
+               if isinstance(item, dict)) and report.verdict == "pass"
+    )
+    return ok(data)
 
 
 @router.post("/reports/{report_id}/review", summary="人工复核质检结论")

@@ -179,6 +179,7 @@ class Shot(Base):
     max_retry: Mapped[int] = mapped_column(Integer, default=6)
     # 人工终审放行的那张帧
     locked_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    accepted_video_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # 乐观锁：防并发覆盖（与农牧项目的单据版本校验同一思路）
     version: Mapped[int] = mapped_column(Integer, default=1)
 

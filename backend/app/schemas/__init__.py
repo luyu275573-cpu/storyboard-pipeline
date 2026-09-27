@@ -227,6 +227,7 @@ class ShotOut(ORMModel):
     retry_count: int
     max_retry: int
     locked_attempt_id: str | None
+    accepted_video_attempt_id: str | None
     prev_locked_attempt_id: str | None
     version: int
 
@@ -360,9 +361,22 @@ class CostReport(BaseModel):
 class GateDecision(BaseModel):
     """人机关卡放行/驳回。三道关卡均不可跳过。"""
 
-    status: str = Field(description="approved/rejected")
+    status: Literal["approved", "rejected"]
     reviewer: str | None = None
     note: str | None = None
+    attempt_id: str | None = Field(default=None, max_length=36)
+    expected_version: int | None = Field(default=None, ge=1)
+    run_id: str | None = Field(default=None, max_length=36)
+
+
+class MediaDecision(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    run_id: str = Field(min_length=1, max_length=36)
+    attempt_id: str = Field(min_length=1, max_length=36)
+    expected_version: int = Field(ge=1)
+    status: Literal["approved", "rejected"]
+    reviewer: str = Field(min_length=1, max_length=80)
+    note: str = Field(min_length=1, max_length=2000)
 
 
 class GateOut(ORMModel):

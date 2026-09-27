@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     siliconflow_vision_model: str = "Qwen/Qwen3-VL-8B-Instruct"
     siliconflow_llm_model: str = "Qwen/Qwen3-32B"
     siliconflow_video_model: str = "Wan-AI/Wan2.2-I2V-A14B"
+    siliconflow_video_price_cents: int = 200
 
     # ---------- Provider 行为 ----------
     provider_max_concurrency: int = 1
@@ -79,7 +80,7 @@ class Settings(BaseSettings):
     render_n_per_shot: int = 2
     qc_parse_max_retry: int = 2
     image_provider_chain: str = "siliconflow,jimeng,vidu"
-    video_provider_chain: str = "kling,jimeng"
+    video_provider_chain: str = "siliconflow"
     vision_provider_chain: str = "siliconflow,dashscope"
     llm_provider_chain: str = "siliconflow,dashscope"
 

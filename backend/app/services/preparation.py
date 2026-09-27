@@ -8,11 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, GatePendingError, NotFoundError
 from app.models.domain import Character, CharacterRef, PipelineRun, Project, ReviewGate, Scene, Shot
-from app.models.tracking import ProviderRequest
+from app.models.tracking import ProviderRequest, RenderAttempt
 from app.schemas import CharacterOut, CharacterRefOut, SceneOut, ShotOut, StoryboardDecision
 
 
 async def ensure_editable(db: AsyncSession, project: Project) -> None:
+    queued = await db.scalar(
+        select(RenderAttempt.id).join(Shot).join(Scene).where(
+            Scene.project_id == project.id, RenderAttempt.stage == "video",
+            RenderAttempt.status.in_(["pending", "running", "unknown"]),
+        ).with_for_update().limit(1)
+    )
+    if queued:
+        raise ConflictError("项目有未完成的视频任务，请查询原任务后再编辑")
     pending = await db.scalar(
         select(ProviderRequest.id)
         .where(
@@ -43,6 +51,7 @@ async def invalidate_board(db: AsyncSession, project: Project, *, character_chan
     shots = await db.scalars(select(Shot).join(Scene).where(Scene.project_id == project.id).with_for_update())
     for shot in shots:
         shot.locked_attempt_id = None
+        shot.accepted_video_attempt_id = None
         shot.prev_locked_attempt_id = None
         shot.status = "pending"
     runs = await db.scalars(select(PipelineRun).where(PipelineRun.project_id == project.id).with_for_update())

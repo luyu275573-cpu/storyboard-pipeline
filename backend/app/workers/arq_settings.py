@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from arq.connections import RedisSettings
+from arq.worker import func as arq_function
 from sqlalchemy import func, select
 
 from app.agents.qc_agent import QCAgent
@@ -37,6 +38,8 @@ from app.services.rendering import (
     build_image_payload,
     prepare_attempt,
 )
+from app.services.video import run_video
+from app.services.video_export import run_video_export
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +387,8 @@ class WorkerSettings:
     """ARQ 读取的配置类。类名固定，勿改。"""
 
     functions = [
+        arq_function(run_video, keep_result=0),
+        run_video_export,
         enqueue_render,
         enqueue_pipeline_run,
         enqueue_synthesize,

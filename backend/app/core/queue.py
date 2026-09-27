@@ -8,6 +8,10 @@ from app.core.config import settings
 
 
 async def enqueue_render_job(shot_id: str, n: int = 1) -> str:
+    return await enqueue_job("enqueue_render", shot_id=shot_id, n=n, stage="image")
+
+
+async def enqueue_job(function: str, **arguments) -> str:
     parsed = Redis.from_url(settings.redis_url)
     kwargs = parsed.connection_pool.connection_kwargs
     pool = await create_pool(
@@ -20,9 +24,11 @@ async def enqueue_render_job(shot_id: str, n: int = 1) -> str:
         default_queue_name=settings.arq_queue_name,
     )
     try:
-        job = await pool.enqueue_job("enqueue_render", shot_id=shot_id, n=n, stage="image")
+        job = await pool.enqueue_job(function, **arguments)
         if job is None:
-            raise RuntimeError("任务已存在或未能进入队列")
+            if arguments.get("_job_id"):
+                return str(arguments["_job_id"])
+            raise RuntimeError("任务未能进入队列")
         return job.job_id
     finally:
         await pool.close()

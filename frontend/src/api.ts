@@ -60,7 +60,7 @@ export type Scene = {
 export type Shot = {
   id: string; scene_id: string; seq: number; shot_size: string; camera_move: string | null;
   composition: string; character_ids: string[]; action_text: string; dialogue: string | null;
-  duration_ms: number; negative_prompt: string | null; version: number; status: string; locked_attempt_id?: string | null
+  duration_ms: number; negative_prompt: string | null; version: number; status: string; locked_attempt_id?: string | null; accepted_video_attempt_id?: string | null
 }
 export type ExportResult = { id: string; status: string; output_path: string; duration_ms: number; shots: number }
 export type Attempt = {
@@ -69,6 +69,7 @@ export type Attempt = {
   cost_cents: number; latency_ms: number | null; created_at: string
 }
 export type QCReport = {
+  model_verdict?: string; decision_conflict?: boolean;
   id: string; attempt_id: string; model: string; verdict: string; dimensions: Record<string, { score: number; ok: boolean; note: string }>;
   severity: string | null; suggestion: string | null; confidence: number | null; reasoning: string | null;
   human_verdict: string | null; human_note: string | null; reviewed_at: string | null; created_at: string

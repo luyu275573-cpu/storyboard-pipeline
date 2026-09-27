@@ -17,7 +17,14 @@ from app.core.errors import AppError, ConflictError, GatePendingError, NotFoundE
 from app.core.response import ok
 from app.models.domain import Character, PipelineRun, ReviewGate, Scene, Shot
 from app.models.tracking import Export, QCReport, RenderAttempt
-from app.schemas import AttemptOut, GateDecision, RenderRequest, ShotCreate, ShotOut, ShotUpdate
+from app.schemas import (
+    AttemptOut,
+    MediaDecision,
+    RenderRequest,
+    ShotCreate,
+    ShotOut,
+    ShotUpdate,
+)
 from app.services.catalog import project_or_404
 from app.services.preparation import ensure_editable, invalidate_board
 
@@ -180,12 +187,13 @@ async def get_attempt_file(attempt_id: str, db: AsyncSession = Depends(get_db)) 
     target = (root / attempt.asset_path).resolve()
     if not target.is_relative_to(root / "generated") or not target.is_file():
         raise NotFoundError("生成关键帧不存在")
-    return FileResponse(target, media_type="image/png", headers={"X-Content-Type-Options": "nosniff"})
+    return FileResponse(target, media_type="video/mp4" if attempt.stage == "video" else "image/png",
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/{shot_id}/gate/compliance", summary="人机关卡 C：先审后播合规终审")
 async def compliance_gate(
-    shot_id: str, body: GateDecision, db: AsyncSession = Depends(get_db)
+    shot_id: str, body: MediaDecision, db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
     """强制人工关卡。质检 Agent 只给建议，放行权在人。
 
@@ -204,10 +212,18 @@ async def compliance_gate(
     shot = await db.scalar(select(Shot).join(Scene).where(Shot.id == shot_id).with_for_update())
     if shot is None:
         raise NotFoundError("镜头不存在")
+    await ensure_editable(db, project)
+    if shot.version != body.expected_version:
+        raise ConflictError("镜头版本已变化，请刷新后审核")
+    from app.services.video import current_context
+    _, _, run = await current_context(db, shot_id)
+    if body.run_id != run.id:
+        raise ConflictError("运行记录与镜头不匹配")
     report = await db.scalar(
         select(QCReport)
         .join(RenderAttempt)
-        .where(RenderAttempt.shot_id == shot.id)
+        .where(RenderAttempt.shot_id == shot.id, RenderAttempt.stage == "image",
+               RenderAttempt.id == body.attempt_id)
         .order_by(QCReport.created_at.desc(), QCReport.id.desc())
         .with_for_update()
         .limit(1)
@@ -215,13 +231,15 @@ async def compliance_gate(
     if report is None or report.verdict != "pass":
         raise GatePendingError("只有视觉质检通过的关键帧才能进入 C 审核")
     attempt = await db.get(RenderAttempt, report.attempt_id, with_for_update=True)
-    if attempt is None or not attempt.asset_path:
+    if attempt is None or attempt.status != "succeeded" or not attempt.asset_path:
         raise AppError("质检通过记录缺少关键帧产物")
     if body.status == "approved":
         shot.locked_attempt_id = attempt.id
         shot.status = "video"
     else:
+        shot.locked_attempt_id = None
         shot.status = "suspended"
+    shot.accepted_video_attempt_id = None
     shot.version += 1
     run_id = await db.scalar(
         select(PipelineRun.id)
@@ -243,6 +261,8 @@ async def compliance_gate(
             "asset_path": attempt.asset_path,
             "qc_report_id": report.id,
             "verdict": report.verdict,
+            "shot_version": shot.version,
+            "storyboard_version": project.storyboard_version,
         },
         decided_at=datetime.now(UTC).replace(tzinfo=None),
     )
@@ -253,13 +273,44 @@ async def compliance_gate(
 
 @router.post("/{shot_id}/video", summary="触发视频生成")
 async def generate_video(shot_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """TODO(impl):
-    1. 前置：必须已通过合规关卡（locked_attempt_id 非空），否则抛 GatePendingError
-    2. stage='video'，走 video_provider_chain（可灵优先，单价低）
-    3. 投递 ARQ 任务，分层超时：单次请求 < 任务总超时 < 前端等待
-    4. 预算不足时降级：降分辨率 / 换便宜供应商 / 挂起，不直接失败
-    """
-    raise AppError("此生成阶段需先接入真实模型并完成联调，目前尚未启用")
+    from app.core.queue import enqueue_job
+    from app.services.video import prepare_video
+
+    attempt = await prepare_video(db, shot_id)
+    await db.refresh(attempt)
+    data = AttemptOut.model_validate(attempt).model_dump(mode="json")
+    await db.commit()
+    if attempt.status not in {"succeeded", "failed"}:
+        await enqueue_job("run_video", attempt_id=attempt.id, _job_id=f"video:{attempt.id}")
+    return ok(data)
+
+
+@router.post("/{shot_id}/gate/video", summary="人工视频终审")
+async def video_gate(shot_id: str, body: MediaDecision,
+                     db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    from app.services.video import decide_video
+    gate = await decide_video(db, shot_id, body)
+    return ok({"gate_id": gate.id, "status": gate.status})
+
+
+@router.post("/video-exports", summary="异步合成视频")
+async def create_video_export(project_id: str, run_id: str, preview: bool = False,
+                              db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    from app.core.queue import enqueue_job
+    from app.services.video_export import prepare_export
+    export = await prepare_export(db, project_id, run_id, preview)
+    await db.commit()
+    await enqueue_job("run_video_export", export_id=export.id)
+    return ok({"id": export.id, "status": export.status})
+
+
+@router.get("/exports/{export_id}", summary="读取导出进度")
+async def export_status(export_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    export = await db.get(Export, export_id)
+    if not export:
+        raise NotFoundError("导出记录不存在")
+    return ok({"id": export.id, "status": export.status, "duration_ms": export.duration_ms,
+               "metrics": export.metrics})
 
 
 @router.post("/synthesize", summary="FFmpeg 时间轴合成")

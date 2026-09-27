@@ -7,6 +7,7 @@ from app.providers.siliconflow import (
     SiliconFlowLLMProvider,
     SiliconFlowVisionProvider,
 )
+from app.providers.video_siliconflow import SiliconFlowVideoProvider
 from app.services.cost_service import CostService
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
 def build_router(cost: CostService) -> ProviderRouter:
     # 同一家供应商的图像、视频等能力分别注册，路由不跨能力降级。
     return ProviderRouter(
-        [SiliconFlowImageProvider(cost), SiliconFlowVisionProvider(cost), SiliconFlowLLMProvider(cost)],
+        [SiliconFlowImageProvider(cost), SiliconFlowVisionProvider(cost),
+         SiliconFlowLLMProvider(cost), SiliconFlowVideoProvider(cost)],
         cost,
     )

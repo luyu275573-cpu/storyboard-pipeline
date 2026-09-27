@@ -57,6 +57,7 @@ def _check_providers() -> dict[str, Any]:
             "siliconflow": bool(settings.siliconflow_api_key),
         },
         "video": {
+            "siliconflow": bool(settings.siliconflow_api_key),
             "kling": bool(settings.kling_access_key and settings.kling_secret_key),
             "jimeng": bool(settings.volc_access_key and settings.volc_secret_key),
         },

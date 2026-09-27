@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { api } from './api'
 import type { Attempt, Board, ExportResult, Gate, Project, QCReport, Run, Scene, Shot } from './api'
 import { Dialog, Empty, useApi } from './ui'
+import VideoPanel from './VideoPanel'
 
 type Editor = { type: 'scene'; scene?: Scene } | { type: 'shot'; scene: Scene; shot?: Shot } | { type: 'review' } | { type: 'delete'; scene: Scene; shot?: Shot } | null
 type Compliance = { scene: Scene; shot: Shot; attempt: Attempt; report: QCReport }
@@ -45,7 +46,7 @@ export default function Storyboard({ project, run, version, refresh }: {
     setBusy(true); setError('')
     try {
       const attempts = await api<Attempt[]>(`/shots/${shot.id}/attempts`)
-      const attempt = [...attempts].reverse().find(item => item.status === 'succeeded' && item.asset_path)
+      const attempt = [...attempts].reverse().find(item => item.stage === 'image' && item.status === 'succeeded' && item.asset_path)
       if (!attempt) throw new Error('该镜头还没有可审核的关键帧')
       const report = await api<QCReport>(`/qc/reports/${attempt.id}`)
       setReviewer(''); setReviewNote(''); setCompliance({ scene, shot, attempt, report })
@@ -55,11 +56,11 @@ export default function Storyboard({ project, run, version, refresh }: {
   async function submitCompliance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!compliance) return
-    const status = new FormData(event.currentTarget).get('status')
+    const status = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter).get('status')
     setBusy(true); setError('')
     try {
       await api(`/shots/${compliance.shot.id}/gate/compliance`, {
-        method: 'POST', body: JSON.stringify({ status, reviewer, note: reviewNote }),
+        method: 'POST', body: JSON.stringify({ status, reviewer, note: reviewNote, run_id: run.id, attempt_id: compliance.attempt.id, expected_version: compliance.shot.version }),
       })
       setCompliance(null); setNotice(status === 'approved' ? 'C 审核已通过，关键帧已锁定。' : 'C 审核已驳回，该镜头已挂起。'); refresh()
     } catch (err) { setError((err as Error).message) }
@@ -126,6 +127,7 @@ export default function Storyboard({ project, run, version, refresh }: {
         <button className="text-button" onClick={refresh}>刷新</button>
       </div>
     </section>
+    {data && <VideoPanel project={project} run={run} shots={data.shots} refresh={refresh} />}
     {notice && <p className="notice" role="status">{notice}</p>}
     {(board.error || (!editor && error)) && <p className="error-banner" role="alert">{board.error || error}<button className="button" onClick={refresh}>重试</button></p>}
     <div className="section-heading"><h2>场景与镜头 <span className="muted">{data?.scenes.length ?? 0} 场 / {data?.shots.length ?? 0} 镜</span></h2><button className="button primary" disabled={!data || busy} onClick={() => open({ type: 'scene' })}>＋ 新建场景</button></div>
@@ -136,7 +138,7 @@ export default function Storyboard({ project, run, version, refresh }: {
       {scene.background_prompt && <p className="scene-background">{scene.background_prompt}</p>}
       <div className="shot-grid">{data.shots.filter(s => s.scene_id === scene.id).map(shot => <article className="shot-card" key={shot.id}>
         <div className="shot-card-heading"><strong>{scene.seq}-{String(shot.seq).padStart(2, '0')}</strong><span className="pill">{shot.shot_size}</span><span>{shot.duration_ms / 1000}s</span></div>
-        <div className="shot-placeholder"><span>{shot.shot_size}</span><small>待生成关键帧</small></div>
+        {shot.locked_attempt_id ? <img className="review-image" src={`/api/v1/shots/attempts/${shot.locked_attempt_id}/file`} alt="已锁定关键帧" /> : <div className="shot-placeholder"><span>{shot.shot_size}</span><small>待生成关键帧</small></div>}
         <div className="shot-card-body"><h3>{shot.action_text}</h3><p>{shot.composition}</p><p className="muted">{shot.camera_move || '固定镜头'} · {shot.character_ids.map(id => data.characters.find(c => c.id === id)?.name).join('、') || '纯场景'}</p>{shot.dialogue && <blockquote>{shot.dialogue}</blockquote>}
           <div className="card-footer"><span>镜头 v{shot.version} · {shot.status}</span><span className="board-actions"><button className="text-button" disabled={busy || data.gate?.status !== 'approved'} onClick={() => void perform(async () => { await api(`/shots/${shot.id}/render`, { method: 'POST', body: JSON.stringify({ n: 1, stage: 'image' }) }); setNotice('关键帧任务已进入队列，稍后刷新查看结果。') })}>生成关键帧</button><button className="text-button" disabled={busy || shot.status !== 'review'} onClick={() => void openCompliance(scene, shot)}>C 审核</button><button className="text-button" onClick={() => open({ type: 'shot', scene, shot })}>编辑镜头</button><button className="text-button" onClick={() => open({ type: 'delete', scene, shot })}>删除</button></span></div>
         </div>
@@ -178,6 +180,7 @@ export default function Storyboard({ project, run, version, refresh }: {
         <img className="review-image" src={`/api/v1/shots/attempts/${compliance.attempt.id}/file`} alt={`镜头 ${compliance.scene.seq}-${compliance.shot.seq} 关键帧`} />
         <p className="muted">视觉质检：<strong>{compliance.report.verdict}</strong> · 置信度 {compliance.report.confidence == null ? '—' : `${Math.round(compliance.report.confidence * 100)}%`} · {compliance.report.model}</p>
         {compliance.report.reasoning && <p className="prompt-text">{compliance.report.reasoning}</p>}
+        {compliance.report.decision_conflict && <p className="warning-note">模型原始结论（{compliance.report.model_verdict}）与本地阈值判定有冲突，请人工核实后再决定。</p>}
         <div className="qc-dimensions">{Object.entries(compliance.report.dimensions).map(([name, value]) => <span className={value.ok ? 'pill success' : 'pill warning'} key={name}>{name} {value.ok ? '通过' : '需处理'}</span>)}</div>
         <label>审核人<input required maxLength={80} value={reviewer} onChange={event => setReviewer(event.target.value)} /></label>
         <label>审核意见<textarea required rows={3} maxLength={2000} value={reviewNote} onChange={event => setReviewNote(event.target.value)} /></label>
