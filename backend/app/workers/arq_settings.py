@@ -210,7 +210,7 @@ async def enqueue_render(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                     else None
                 )
                 if current_shot is not None:
-                    current_shot.status = "review"
+                    current_shot.status = "qc"
                 if current_scene is not None and current_scene.baseline_attempt_id is None:
                     current_scene.baseline_attempt_id = row.id
             else:
@@ -253,17 +253,25 @@ async def enqueue_render(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                     kind=ProviderKind.VISION,
                     operation_key=f"qc:{shot_id}:{attempt.id}"[:120],
                 )
-                qc_result = await QCAgent(provider_router=router).inspect(
-                    image_paths=image_paths,
-                    anchor_prompt=anchor_prompt,
-                    anchor_version=anchor_version,
-                    shot_size=qc_shot.shot_size,
-                    composition=qc_shot.composition,
-                    action_text=qc_shot.action_text,
-                    dialogue=qc_shot.dialogue,
-                    has_baseline_frame=baseline_path is not None,
-                    call_context=qc_context,
-                )
+                try:
+                    qc_result = await QCAgent(provider_router=router).inspect(
+                        image_paths=image_paths,
+                        anchor_prompt=anchor_prompt,
+                        anchor_version=anchor_version,
+                        shot_size=qc_shot.shot_size,
+                        composition=qc_shot.composition,
+                        action_text=qc_shot.action_text,
+                        dialogue=qc_shot.dialogue,
+                        has_baseline_frame=baseline_path is not None,
+                        call_context=qc_context,
+                    )
+                except ProviderUncertainError:
+                    qc_shot.status = "suspended"
+                    logger.warning("视觉 QC 结果未知，保留额度并挂起 shot_id=%s attempt_id=%s",
+                                   shot_id, attempt.id)
+                    results.append({"attempt_id": attempt.id, "status": qc_shot.status,
+                                    "asset_path": qc_attempt.asset_path, "qc_verdict": "unknown"})
+                    continue
                 db.add(
                     QCReport(
                         attempt_id=qc_attempt.id,
