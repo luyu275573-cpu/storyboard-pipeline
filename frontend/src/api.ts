@@ -4,7 +4,7 @@ export type Project = {
 }
 export type FeatureKey = 'face_features' | 'hair_features' | 'body_features' | 'outfit_features' | 'style_lock'
 export type Character = Record<FeatureKey, Record<string, string>> & {
-  id: string; project_id: string; name: string; anchor_prompt: string; anchor_version: number;
+  id: string; project_id: string; name: string; source_description: string | null; anchor_prompt: string; anchor_version: number;
   confirmed: boolean; subjective_word_hits: string[]
 }
 export type Run = { id: string; status: string; current_stage: string; graph_state: { blockers?: string[] }; error_message: string | null }
@@ -21,6 +21,7 @@ export type CallPage = { items: {
 }[]; page: number; has_more: boolean }
 export type Page = { items: Project[]; total: number }
 export type Preview = { anchor_prompt: string; negative_prompt: string; subjective_word_hits: string[] }
+export type CharacterParse = Pick<Character, 'name' | 'source_description' | 'face_features' | 'hair_features' | 'body_features' | 'outfit_features' | 'style_lock' | 'anchor_prompt' | 'subjective_word_hits'> & { model: string; cost_cents: number }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {

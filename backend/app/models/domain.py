@@ -69,6 +69,8 @@ class Character(Base):
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
     name: Mapped[str] = mapped_column(String(80))
+    # 原始自然语言设定：保留创作意图，结构化特征是模型提取后的可审计结果。
+    source_description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # 结构化特征：只写可验证的客观特征，禁用"清秀/帅气/温柔"等主观词
     face_features: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -62,6 +62,7 @@ class CharacterCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     project_id: str
     name: str = Field(min_length=1, max_length=80)
+    source_description: str | None = Field(default=None, max_length=12000)
     # 结构化特征：只接受客观可验证描述，主观词会在锚定拼装时告警
     face_features: dict[str, str] = Field(default_factory=dict)
     hair_features: dict[str, str] = Field(default_factory=dict)
@@ -100,6 +101,7 @@ class CharacterOut(ORMModel):
     id: str
     project_id: str
     name: str
+    source_description: str | None
     face_features: dict[str, Any]
     hair_features: dict[str, Any]
     body_features: dict[str, Any]
@@ -109,6 +111,13 @@ class CharacterOut(ORMModel):
     anchor_version: int
     confirmed: bool
     confirmed_at: datetime | None
+
+
+class CharacterParseRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    project_id: str = Field(min_length=1, max_length=36)
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=8, max_length=12000)
 
 
 class ReferenceReview(BaseModel):

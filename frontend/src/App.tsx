@@ -4,7 +4,7 @@ import { Dialog, Empty, Icon, useApi } from './ui'
 import References from './References'
 import Storyboard from './Storyboard'
 import { api, centsFromInput, money } from './api'
-import type { Budget, CallPage, Character, FeatureKey, Gate, Page, Preview, Project, Run } from './api'
+import type { Budget, CallPage, Character, CharacterParse, FeatureKey, Gate, Page, Preview, Project, Run } from './api'
 
 const groups: [FeatureKey, string, string][] = [
   ['face_features', '面部特征', '脸型=鹅蛋脸\n眼睛=深棕色杏眼'],
@@ -48,6 +48,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [preview, setPreview] = useState<Preview | null>(null)
+  const [characterParse, setCharacterParse] = useState<CharacterParse | null>(null)
+  const [characterFormRevision, setCharacterFormRevision] = useState(0)
   const projects = useApi<Page>(`/projects?page=${page}&page_size=9&q=${encodeURIComponent(search)}`, version)
   const characters = useApi<Character[]>(project ? `/characters?project_id=${project.id}` : null, version)
   const runs = useApi<Run[]>(project ? `/projects/${project.id}/runs` : null, version)
@@ -59,7 +61,7 @@ export default function App() {
   const run = runs.data?.find(r => r.current_stage === 'character' && r.status === 'waiting_gate')
   const confirmed = characters.data?.filter(c => c.confirmed).length ?? 0
   const refresh = () => setVersion(v => v + 1)
-  const openModal = (value: Modal) => { setError(''); setNotice(''); setModal(value) }
+  const openModal = (value: Modal) => { setError(''); setNotice(''); if (value === 'character') { setCharacterParse(null); setCharacterFormRevision(0) }; setModal(value) }
   const chooseProject = (value: Project) => {
     setProject(value); setCallsPage(1); setSelectedCharacter(''); setTab('characters'); setNotice(''); setError('')
   }
@@ -87,6 +89,7 @@ export default function App() {
       const editing = modal === 'edit' && character
       const body = { project_id: project!.id, name: form.get('name'),
         ...Object.fromEntries(groups.map(([key]) => [key, parseFeatures(form.get(key))])),
+        source_description: form.get('source_description') || null,
         ...(editing ? { expected_version: character.anchor_version } : {}),
       }
       const saved = await api<Character>(editing ? `/characters/${character.id}` : '/characters', {
@@ -95,6 +98,21 @@ export default function App() {
       setSelectedCharacter(saved.id)
       setNotice(editing ? '新版本已保存，请重新审核确认。' : '角色已建立，锚定描述已自动生成。')
     })
+  }
+  async function parseCharacter(form: HTMLFormElement) {
+    const values = new FormData(form)
+    const name = String(values.get('name') || '').trim()
+    const description = String(values.get('source_description') || '').trim()
+    if (!name) throw new Error('请先填写角色名称')
+    if (description.length < 8) throw new Error('自然语言角色描述至少填写 8 个字')
+    setBusy(true); setError('')
+    try {
+      const parsed = await api<CharacterParse>('/characters/parse', {
+        method: 'POST', body: JSON.stringify({ project_id: project!.id, name, description }),
+      })
+      setCharacterParse(parsed); setCharacterFormRevision(value => value + 1); setNotice('模型已提取角色关键特征，请核对后保存。')
+    } catch (err) { setError(err instanceof Error ? err.message : '角色特征提取失败') }
+    finally { setBusy(false) }
   }
   function confirmCharacter(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -164,6 +182,7 @@ export default function App() {
               <section className="panel character-detail"><div className="section-heading"><div><span className={`pill ${character.confirmed ? 'success' : 'warning'}`}>{character.confirmed ? '已人工确认' : '等待人工确认'}</span><h2>{character.name}<small>v{character.anchor_version}</small></h2></div><button className="button" onClick={() => openModal('edit')}>编辑特征</button></div>
                 <div className="feature-grid">{groups.map(([key, label]) => <div key={key}><h3>{label}</h3><dl>{Object.entries(character[key]).length ? Object.entries(character[key]).map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>) : <p className="muted">尚未填写</p>}</dl></div>)}</div>
                 {character.subjective_word_hits.length > 0 && <p className="warning-note">特征含主观词：{character.subjective_word_hits.join('、')}。建议改为可观察的具体描述。</p>}
+                {character.source_description && <div className="prompt"><h3>原始自然语言设定</h3><p>{character.source_description}</p></div>}
                 <div className="prompt"><div className="section-heading"><h3>锚定描述</h3><button className="text-button" disabled={busy} onClick={() => void showPreview()}>预览完整提示词 ↗</button></div><p>{character.anchor_prompt}</p></div>
                 <div className="detail-footer"><p>{character.confirmed ? '修改特征会生成新版本，并要求重新确认。' : '请核对以上特征，确认后会保存当前版本的审核快照。'}</p><button className="button primary" disabled={character.confirmed || !run} onClick={() => openModal('confirm')}>{character.confirmed ? '✓ 当前版本已确认' : '审核并确认角色'}</button></div>
                 {currentRun && <References key={character.id} character={character} run={currentRun} version={version} refresh={refresh} />}
@@ -186,7 +205,7 @@ export default function App() {
     {modal && <Dialog title={{project: '创建新项目', character: '建立角色档案', edit: '编辑角色特征', confirm: '确认角色版本', preview: '锚定提示词预览'}[modal]} busy={busy} close={() => setModal(null)}>
       {error && <p className="error-banner" role="alert">{error}</p>}
       {modal === 'project' && <form onSubmit={createProject}><div className="form-body"><label>项目名称<input name="title" required maxLength={200} placeholder="例如：山海拾遗 · 第一集" autoFocus /></label><div className="form-row"><label>画风<input name="style" required maxLength={80} defaultValue="日系厚涂" /></label><label>项目预算（元）<input name="budget" type="number" min="0" max="200" step="0.01" required defaultValue="200.00" /></label></div><label>故事概要 / 剧本<textarea name="synopsis" rows={5} maxLength={15000} placeholder="这段故事发生在哪里，谁将做出怎样的选择？" /></label><p className="form-hint">创建项目不会调用模型或产生费用。</p></div><div className="dialog-actions"><button type="button" className="button" disabled={busy} onClick={() => setModal(null)}>取消</button><button className="button primary" disabled={busy}>{busy ? '正在创建…' : '创建并准备角色'}</button></div></form>}
-      {(modal === 'character' || modal === 'edit') && <form onSubmit={saveCharacter}><div className="form-body"><label>角色名称<input name="name" required maxLength={80} autoFocus defaultValue={modal === 'edit' ? character?.name : ''} placeholder="例如：林晚" /></label><p className="form-hint">每行填写一项：名称=描述。建议用明确的形状、颜色和服饰细节。</p><div className="feature-form">{groups.map(([key, label, placeholder]) => <label key={key}>{label}<textarea name={key} rows={3} placeholder={placeholder} defaultValue={modal === 'edit' && character ? Object.entries(character[key]).map(([k, v]) => `${k}=${v}`).join('\n') : ''} /></label>)}</div>{modal === 'edit' && <p className="warning-note">保存后版本递增，已有确认将失效，需要重新审核。</p>}</div><div className="dialog-actions"><button type="button" className="button" disabled={busy} onClick={() => setModal(null)}>取消</button><button className="button primary" disabled={busy}>{busy ? '正在保存…' : '保存角色档案'}</button></div></form>}
+      {(modal === 'character' || modal === 'edit') && <form key={modal === 'character' ? characterFormRevision : character?.id} onSubmit={saveCharacter}><div className="form-body"><label>角色名称<input name="name" required maxLength={80} autoFocus defaultValue={modal === 'edit' ? character?.name : characterParse?.name ?? ''} placeholder="例如：林晚" /></label>{modal === 'character' && <><label>自然语言角色描述<textarea name="source_description" rows={5} required minLength={8} maxLength={12000} defaultValue={characterParse?.source_description ?? ''} placeholder="例如：一个三十岁左右的茅山道士，身材高瘦，穿洗旧的青灰色道袍，右手常握桃木剑……" /><span className="form-hint">先按你习惯描述人物，模型会转换成可复用的形状、颜色、材质和服饰关键词。</span></label><div className="parse-action"><button type="button" className="button" disabled={busy} onClick={event => void parseCharacter(event.currentTarget.form!)}>{busy ? '正在提取…' : '✦ AI 提取关键特征'}</button>{characterParse && <span className="muted">已提取 · {characterParse.model} · {characterParse.cost_cents} 分</span>}</div></>}{modal === 'edit' && <label>原始自然语言设定<textarea name="source_description" rows={4} maxLength={12000} defaultValue={character?.source_description ?? ''} placeholder="可选：保留本版本的创作描述" /></label>}<p className="form-hint">模型回填后仍需人工核对；每行一项：名称=描述。</p><div className="feature-form">{groups.map(([key, label, placeholder]) => <label key={key}>{label}<textarea name={key} rows={3} placeholder={placeholder} defaultValue={modal === 'edit' && character ? Object.entries(character[key]).map(([k, v]) => `${k}=${v}`).join('\n') : characterParse ? Object.entries(characterParse[key]).map(([k, v]) => `${k}=${v}`).join('\n') : ''} /></label>)}</div>{modal === 'edit' && <p className="warning-note">保存后版本递增，已有确认将失效，需要重新审核。</p>}</div><div className="dialog-actions"><button type="button" className="button" disabled={busy} onClick={() => setModal(null)}>取消</button><button className="button primary" disabled={busy}>{busy ? '正在保存…' : '保存角色档案'}</button></div></form>}
       {modal === 'confirm' && character && <form onSubmit={confirmCharacter}><div className="form-body"><p>正在确认 <strong>{character.name} · v{character.anchor_version}</strong></p><div className="prompt"><p>{character.anchor_prompt}</p></div><label>确认人<input name="reviewer" required maxLength={80} placeholder="填写你的姓名或称呼" autoFocus /></label><label className="checkbox-label"><input type="checkbox" required />我已核对当前角色特征，确认该版本可用于后续分镜准备。</label><p className="form-hint">本次操作会保存审核快照；版本变化时需重新确认。</p></div><div className="dialog-actions"><button className="button" type="button" disabled={busy} onClick={() => setModal(null)}>返回检查</button><button className="button primary" disabled={busy || !run}>{busy ? '正在确认…' : '确认当前版本'}</button></div></form>}
       {modal === 'preview' && preview && <div className="form-body"><h3>角色锚定描述</h3><div className="prompt"><p>{preview.anchor_prompt}</p></div><h3>负面提示词</h3><div className="prompt"><p>{preview.negative_prompt || '尚未设置'}</p></div><p className="form-hint">由已保存的结构化特征自动生成，同一输入保持相同描述。</p></div>}
     </Dialog>}

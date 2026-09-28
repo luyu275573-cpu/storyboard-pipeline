@@ -73,6 +73,8 @@ async def save_character(
         character = Character(project_id=body.project_id, anchor_version=1)
         db.add(character)
     character.name = body.name
+    if body.source_description is not None or not character_id:
+        character.source_description = body.source_description
     for key in FEATURES:
         setattr(character, key, getattr(body, key))
     character.anchor_prompt = build_anchor_prompt(anchor_input(character))
